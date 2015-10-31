@@ -167,6 +167,31 @@ Linear algebra functions in Julia are largely implemented by calling functions f
 
    Same as ``ldltfact``\ , but saves space by overwriting the input ``A``\ , instead of creating a copy.
 
+.. function:: qr(v::AbstractVector)
+
+   .. Docstring generated from Julia source
+
+   Computes the polar decomposition of a vector.
+
+   Input
+   *****
+
+
+   * ``v::AbstractVector`` - vector to normalize
+
+   Outputs
+   *******
+
+
+   * ``w`` - A unit vector in the direction of ``v``
+   * ``r`` - The norm of ``v``
+
+   See also
+   ********
+
+
+   ``normalize``\ , ``normalize!``\ , ``qr!``
+
 .. function:: qr(A [,pivot=Val{false}][;thin=true]) -> Q, R, [p]
 
    .. Docstring generated from Julia source
@@ -663,6 +688,56 @@ Linear algebra functions in Julia are largely implemented by calling functions f
    For any iterable container ``A`` (including arrays of any dimension) of numbers (or any element type for which ``norm`` is defined), compute the ``p``\ -norm (defaulting to ``p=2``\ ) as if ``A`` were a vector of the corresponding length.
 
    For example, if ``A`` is a matrix and ``p=2``\ , then this is equivalent to the Frobenius norm.
+
+.. function:: normalize!(v, [p=2])
+
+   .. Docstring generated from Julia source
+
+   Normalize the vector ``v`` in-place with respect to the ``p``\ -norm.
+
+   Inputs
+   ******
+
+
+   * ``v::AbstractVector`` - vector to be normalized
+   * ``p::Real`` - The ``p``\ -norm to normalize with respect to. Default: 2
+
+   Output
+   ******
+
+
+   * ``v`` - A unit vector being the input vector, rescaled to have norm 1.         The input vector is modified in-place.
+
+   See also
+   ********
+
+
+   ``normalize``\ , ``qr``
+
+.. function:: normalize(v, [p=2])
+
+   .. Docstring generated from Julia source
+
+   Normalize the vector ``v`` with respect to the ``p``\ -norm.
+
+   Inputs
+   ******
+
+
+   * ``v::AbstractVector`` - vector to be normalized
+   * ``p::Real`` - The ``p``\ -norm to normalize with respect to. Default: 2
+
+   Output
+   ******
+
+
+   * ``v`` - A unit vector being a copy of the input vector, scaled to have norm 1
+
+   See also
+   ********
+
+
+   ``normalize!``\ , ``qr``
 
 .. function:: cond(M, [p])
 
