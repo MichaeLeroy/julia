@@ -24,7 +24,7 @@ export sin, cos, tan, sinh, cosh, tanh, asin, acos, atan,
 
 import Base: log, exp, sin, cos, tan, sinh, cosh, tanh, asin,
              acos, atan, asinh, acosh, atanh, sqrt, log2, log10,
-             max, min, minmax, ^, exp2,
+             max, min, minmax, ^, exp2, muladd,
              exp10, expm1, log1p,
              sign_mask, exponent_mask, exponent_one, exponent_half,
              significand_mask, significand_bits, exponent_bits, exponent_bias
@@ -42,7 +42,7 @@ clamp{X,L,H}(x::X, lo::L, hi::H) =
 
 clamp{T}(x::AbstractArray{T,1}, lo, hi) = [clamp(xx, lo, hi) for xx in x]
 clamp{T}(x::AbstractArray{T,2}, lo, hi) =
-    [clamp(x[i,j], lo, hi) for i in 1:size(x,1), j in 1:size(x,2)]
+    [clamp(x[i,j], lo, hi) for i in 1:size(x,1), j in 1:size(x,2)]  # fixme (iter): change to `eachindex` when #15459 is ready
 clamp{T}(x::AbstractArray{T}, lo, hi) =
     reshape([clamp(xx, lo, hi) for xx in x], size(x))
 
@@ -146,36 +146,51 @@ sqrt(x::Float32) = box(Float32,sqrt_llvm(unbox(Float32,x)))
 sqrt(x::Real) = sqrt(float(x))
 @vectorize_1arg Number sqrt
 
-hypot(x::Real, y::Real) = hypot(promote(float(x), float(y))...)
-function hypot{T<:AbstractFloat}(x::T, y::T)
-    x = abs(x)
-    y = abs(y)
-    if x < y
-        x, y = y, x
+"""
+    hypot(x, y)
+
+Compute the hypotenuse ``\\sqrt{x^2+y^2}`` avoiding overflow and underflow.
+"""
+hypot(x::Number, y::Number) = hypot(promote(x, y)...)
+function hypot{T<:Number}(x::T, y::T)
+    ax = abs(x)
+    ay = abs(y)
+    if ax < ay
+        ax, ay = ay, ax
     end
-    if x == 0
-        r = y/one(x)
+    if ax == 0
+        r = ay / one(ax)
     else
-        r = y/x
-        if isnan(r)
-            isinf(x) && return x
-            isinf(y) && return y
-            return r
-        end
+        r = ay / ax
     end
-    x * sqrt(one(r)+r*r)
+
+    rr = ax * sqrt(1 + r * r)
+
+    # Use type of rr to make sure that return type is the same for
+    # all branches
+    if isnan(r)
+        isinf(ax) && return oftype(rr, Inf)
+        isinf(ay) && return oftype(rr, Inf)
+        return oftype(rr, r)
+    else
+        return rr
+    end
 end
+@vectorize_2arg Number hypot
+
+"""
+    hypot(x...)
+
+Compute the hypotenuse ``\\sqrt{\\sum x_i}`` avoiding overflow and underflow.
+"""
+hypot(x::Number...) = vecnorm(x)
 
 atan2(y::Real, x::Real) = atan2(promote(float(y),float(x))...)
 atan2{T<:AbstractFloat}(y::T, x::T) = Base.no_op_err("atan2", T)
 
-for f in (:atan2, :hypot)
-    @eval begin
-        ($f)(y::Float64, x::Float64) = ccall(($(string(f)),libm), Float64, (Float64, Float64,), y, x)
-        ($f)(y::Float32, x::Float32) = ccall(($(string(f,"f")),libm), Float32, (Float32, Float32), y, x)
-        @vectorize_2arg Number $f
-    end
-end
+atan2(y::Float64, x::Float64) = ccall((:atan2,libm), Float64, (Float64, Float64,), y, x)
+atan2(y::Float32, x::Float32) = ccall((:atan2f,libm), Float32, (Float32, Float32), y, x)
+@vectorize_2arg Number atan2
 
 max{T<:AbstractFloat}(x::T, y::T) = ifelse((y > x) | (signbit(y) < signbit(x)),
                                     ifelse(isnan(y), x, y), ifelse(isnan(x), y, x))
@@ -250,12 +265,12 @@ function frexp{T<:AbstractFloat}(x::T)
 end
 
 function frexp{T<:AbstractFloat}(A::Array{T})
-    f = similar(A)
-    e = Array(Int, size(A))
-    for i in eachindex(A)
-        f[i], e[i] = frexp(A[i])
+    F = similar(A)
+    E = Array(Int, size(A))
+    for (iF, iE, iA) in zip(eachindex(F), eachindex(E), eachindex(A))
+        F[iF], E[iE] = frexp(A[iA])
     end
-    return (f, e)
+    return (F, E)
 end
 
 modf(x) = rem(x,one(x)), trunc(x)
@@ -378,6 +393,9 @@ function mod2pi(x::Int64)
   fx == x || throw(ArgumentError("Int64 argument to mod2pi is too large: $x"))
   mod2pi(fx)
 end
+
+# generic fallback; for number types, promotion.jl does promotion
+muladd(x,y,z) = x*y+z
 
 # More special functions
 include("special/trig.jl")

@@ -113,16 +113,18 @@ end
 
 Computes the polar decomposition of a vector.
 
-# Input
+Input:
+
 - `v::AbstractVector` - vector to normalize
 
-# Outputs
+Outputs:
+
 - `w` - A unit vector in the direction of `v`
 - `r` - The norm of `v`
 
-# See also
+See also:
 
-`normalize`, `normalize!`, `qr!`
+`normalize`, `normalize!`, `LinAlg.qr!`
 """
 function qr(v::AbstractVector)
     nrm = norm(v)
@@ -136,18 +138,21 @@ function qr(v::AbstractVector)
 end
 
 """
-    qr!(v::AbstractVector)
+    LinAlg.qr!(v::AbstractVector)
 
-Computes the polar decomposition of a vector.
+Computes the polar decomposition of a vector. Instead of returning a new vector
+as `qr(v::AbstractVector)`, this function mutates the input vector `v` in place.
 
-# Input
+Input:
+
 - `v::AbstractVector` - vector to normalize
 
-# Outputs
-- `w` - A unit vector in the direction of `v`
+Outputs:
+
+- `w` - A unit vector in the direction of `v` (This is a mutation of `v`).
 - `r` - The norm of `v`
 
-# See also
+See also:
 
 `normalize`, `normalize!`, `qr`
 """
@@ -385,8 +390,7 @@ function A_mul_Bc!{T}(A::AbstractMatrix{T},Q::QRPackedQ{T})
     end
     A
 end
-A_mul_Bc(A::AbstractTriangular, B::Union{QRCompactWYQ,QRPackedQ}) = A_mul_Bc(full(A), B)
-function A_mul_Bc{TA,TB}(A::AbstractArray{TA}, B::Union{QRCompactWYQ{TB},QRPackedQ{TB}})
+function A_mul_Bc{TA,TB}(A::AbstractMatrix{TA}, B::Union{QRCompactWYQ{TB},QRPackedQ{TB}})
     TAB = promote_type(TA,TB)
     BB = convert(AbstractMatrix{TAB}, B)
     if size(A,2) == size(B.factors, 1)

@@ -19,48 +19,38 @@ end
 
 # REPL Symbol Completions
 function complete_symbol(sym, ffunc)
-    # Find module
-    strs = split(sym, '.')
     # Maybe be smarter in the future
     context_module = Main
-
     mod = context_module
+    name = sym
+
     lookup_module = true
     t = Union{}
-    for name in strs[1:(end-1)]
-        s = symbol(name)
-        if lookup_module
-            # If we're considering A.B.C where B doesn't exist in A, give up
-            isdefined(mod, s) || return UTF8String[]
-            b = mod.(s)
+    if rsearch(sym, non_identifier_chars) < rsearch(sym, '.')
+        # Find module
+        lookup_name, name = rsplit(sym, ".", limit=2)
+
+        ex = Base.syntax_deprecation_warnings(false) do
+            parse(lookup_name, raise=false)
+        end
+
+        b, found = get_value(ex, context_module)
+        if found
             if isa(b, Module)
                 mod = b
+                lookup_module = true
             elseif Base.isstructtype(typeof(b))
                 lookup_module = false
                 t = typeof(b)
-            else
-                # A.B.C where B is neither a type nor a
-                # module. Will have to be revisited if
-                # overloading is allowed
-                return UTF8String[]
             end
-        else
-            # We're now looking for a type
-            fields = fieldnames(t)
-            found = false
-            for i in 1:length(fields)
-                s == fields[i] || continue
-                t = t.types[i]
-                Base.isstructtype(t) || return UTF8String[]
-                found = true
-                break
-            end
-            #Same issue as above, but with types instead of modules
-            found || return UTF8String[]
+        else # If the value is not found using get_value, the expression contain an advanced expression
+            lookup_module = false
+            t, found = get_type(ex, context_module)
         end
+        found || return UTF8String[]
+        # Ensure REPLCompletion do not crash when asked to complete a tuple, #15329
+        !lookup_module && t <: Tuple && return UTF8String[]
     end
-
-    name = strs[end]
 
     suggestions = UTF8String[]
     if lookup_module
@@ -95,10 +85,10 @@ end
 function complete_keyword(s::ByteString)
     const sorted_keywords = [
         "abstract", "baremodule", "begin", "bitstype", "break", "catch", "ccall",
-        "const", "continue", "do", "else", "elseif", "end", "export", "finally",
-        "for", "function", "global", "if", "immutable", "import", "importall",
-        "let", "local", "macro", "module", "quote", "return", "try", "type",
-        "typealias", "using", "while"]
+        "const", "continue", "do", "else", "elseif", "end", "export", "false",
+        "finally", "for", "function", "global", "if", "immutable", "import",
+        "importall", "let", "local", "macro", "module", "quote", "return",
+        "true", "try", "type", "typealias", "using", "while"]
     r = searchsorted(sorted_keywords, s)
     i = first(r)
     n = length(sorted_keywords)
@@ -109,7 +99,7 @@ function complete_keyword(s::ByteString)
     sorted_keywords[r]
 end
 
-function complete_path(path::AbstractString, pos)
+function complete_path(path::AbstractString, pos; use_envpath=false)
     if Base.is_unix(OS_NAME) && ismatch(r"^~(?:/|$)", path)
         # if the path is just "~", don't consider the expanded username as a prefix
         if path == "~"
@@ -133,7 +123,7 @@ function complete_path(path::AbstractString, pos)
         return UTF8String[], 0:-1, false
     end
 
-    matches = UTF8String[]
+    matches = Set{UTF8String}()
     for file in files
         if startswith(file, prefix)
             id = try isdir(joinpath(dir, file)) catch; false end
@@ -141,12 +131,55 @@ function complete_path(path::AbstractString, pos)
             push!(matches, id ? file * (@windows? "\\\\" : "/") : file)
         end
     end
-    matches = UTF8String[replace(s, r"\s", "\\ ") for s in matches]
+
+    if use_envpath && length(dir) == 0
+        # Look for files in PATH as well
+        local pathdirs = split(ENV["PATH"], @unix? ":" : ";")
+
+        for pathdir in pathdirs
+            local actualpath
+            try
+                actualpath = realpath(pathdir)
+            catch
+                # Bash doesn't expect every folder in PATH to exist, so neither shall we
+                continue
+            end
+
+            if actualpath != pathdir && in(actualpath,pathdirs)
+                # Remove paths which (after resolving links) are in the env path twice.
+                # Many distros eg. point /bin to /usr/bin but have both in the env path.
+                continue
+            end
+
+            local filesinpath
+            try
+                filesinpath = readdir(pathdir)
+            catch e
+                # Bash allows dirs in PATH that can't be read, so we should as well.
+                if isa(e, SystemError)
+                    continue
+                else
+                    # We only handle SystemErrors here
+                    rethrow(e)
+                end
+            end
+
+            for file in filesinpath
+                # In a perfect world, we would filter on whether the file is executable
+                # here, or even on whether the current user can execute the file in question.
+                if startswith(file, prefix) && isfile(joinpath(pathdir, file))
+                    push!(matches, file)
+                end
+            end
+        end
+    end
+
+    matchList = UTF8String[replace(s, r"\s", "\\ ") for s in matches]
     startpos = pos - endof(prefix) + 1 - length(matchall(r" ", prefix))
     # The pos - endof(prefix) + 1 is correct due to `endof(prefix)-endof(prefix)==0`,
     # hence we need to add one to get the first index. This is also correct when considering
     # pos, because pos is the `endof` a larger string which `endswith(path)==true`.
-    return matches, startpos:pos, !isempty(matches)
+    return matchList, startpos:pos, !isempty(matchList)
 end
 
 # Determines whether method_complete should be tried. It should only be done if
@@ -167,7 +200,7 @@ end
 
 # Returns a range that includes the method name in front of the first non
 # closed start brace from the end of the string.
-function find_start_brace(s::AbstractString)
+function find_start_brace(s::AbstractString; c_start='(', c_end=')')
     braces = 0
     r = RevString(s)
     i = start(r)
@@ -177,9 +210,9 @@ function find_start_brace(s::AbstractString)
     while !done(r, i)
         c, i = next(r, i)
         if !in_single_quotes && !in_double_quotes && !in_back_ticks
-            if c == '('
+            if c == c_start
                 braces += 1
-            elseif c == ')'
+            elseif c == c_end
                 braces -= 1
             elseif c == '\''
                 in_single_quotes = true
@@ -222,20 +255,75 @@ get_value(sym::Symbol, fn) = isdefined(fn, sym) ? (fn.(sym), true) : (nothing, f
 get_value(sym::QuoteNode, fn) = isdefined(fn, sym.value) ? (fn.(sym.value), true) : (nothing, false)
 get_value(sym, fn) = sym, true
 
+# Return the value of a getfield call expression
+function get_value_getfield(ex::Expr, fn)
+    # Example :((top(getfield))(Base,:max))
+    val, found = get_value_getfield(ex.args[2],fn) #Look up Base in Main and returns the module
+    found || return (nothing, false)
+    get_value_getfield(ex.args[3],val) #Look up max in Base and returns the function if found.
+end
+get_value_getfield(sym, fn) = get_value(sym, fn)
+
+# Determines the return type with Base.return_types of a function call using the type information of the arguments.
+function get_type_call(expr::Expr)
+    f_name = expr.args[1]
+    # The if statement should find the f function. How f is found depends on how f is referenced
+    if isa(f_name, TopNode)
+        ft = typeof(Base.(f_name.name))
+        found = true
+    else
+        ft, found = get_type(f_name, Main)
+    end
+    found || return (Any, false) # If the function f is not found return Any.
+    args = Any[]
+    for ex in expr.args[2:end] # Find the type of the function arguments
+        typ, found = get_type(ex, Main)
+        found ? push!(args, typ) : push!(args, Any)
+    end
+    # use _methods_by_ftype as the function is supplied as a type
+    mt = Base._methods_by_ftype(Tuple{ft, args...}, -1)
+    length(mt) == 1 || return (Any, false)
+    m = first(mt)
+    # Typeinference
+    linfo = Base.func_for_method_checked(m, Tuple{args...})
+    (tree, return_type) = Core.Inference.typeinf(linfo, m[1], m[2])
+    return return_type, true
+end
+# Returns the return type. example: get_type(:(Base.strip("",' ')),Main) returns (ASCIIString,true)
+function get_type(sym::Expr, fn)
+    sym=expand(sym)
+    val, found = get_value(sym, fn)
+    found && return Base.typesof(val).parameters[1], found
+    if sym.head === :call
+        # getfield call is special cased as the evaluation of getfield provides good type information,
+        # is inexpensive and it is also performed in the complete_symbol function.
+        if sym.args[1] === TopNode(:getfield)
+            val, found = get_value_getfield(sym, Main)
+            return found ? Base.typesof(val).parameters[1] : Any, found
+        end
+        return get_type_call(sym)
+    end
+    (Any, false)
+end
+function get_type(sym, fn)
+    val, found = get_value(sym, fn)
+    return found ? Base.typesof(val).parameters[1] : Any, found
+end
 # Method completion on function call expression that look like :(max(1))
 function complete_methods(ex_org::Expr)
     args_ex = DataType[]
     func, found = get_value(ex_org.args[1], Main)
-    (!found || (found && !isgeneric(func))) && return UTF8String[]
+    !found && return UTF8String[]
     for ex in ex_org.args[2:end]
-        val, found = get_value(ex, Main)
-        found ? push!(args_ex, Base.typesof(val).parameters[1]) : push!(args_ex, Any)
+        val, found = get_type(ex, Main)
+        push!(args_ex, val)
     end
     out = UTF8String[]
-    t_in = Tuple{args_ex...} # Input types
+    t_in = Tuple{Core.Typeof(func), args_ex...} # Input types
+    na = length(args_ex)+1
     for method in methods(func)
         # Check if the method's type signature intersects the input types
-        typeintersect(Tuple{method.sig.parameters[1 : min(length(args_ex), end)]...}, t_in) != Union{} &&
+        typeintersect(Tuple{method.sig.parameters[1 : min(na, end)]...}, t_in) != Union{} &&
             push!(out,string(method))
     end
     return out
@@ -370,9 +458,33 @@ function completions(string, pos)
         comp_keywords = false
     end
     startpos == 0 && (pos = -1)
-    dotpos <= startpos && (dotpos = startpos - 1)
+    dotpos < startpos && (dotpos = startpos - 1)
     s = string[startpos:pos]
     comp_keywords && append!(suggestions, complete_keyword(s))
+    # The case where dot and start pos is equal could look like: "(""*"").d","". or  CompletionFoo.test_y_array[1].y
+    # This case can be handled by finding the begining of the expresion. This is done bellow.
+    if dotpos == startpos
+        i = prevind(string, startpos)
+        while 0 < i
+            c = string[i]
+            if c in [')', ']']
+                if c==')'
+                    c_start='('; c_end=')'
+                elseif c==']'
+                    c_start='['; c_end=']'
+                end
+                frange, end_off_indentifier = find_start_brace(string[1:prevind(string, i)], c_start=c_start, c_end=c_end)
+                startpos = start(frange)
+                i = prevind(string, startpos)
+            elseif c in ["\'\"\`"...]
+                s = "$c$c"*string[startpos:pos]
+                break
+            else
+                break
+            end
+            s = string[startpos:pos]
+        end
+    end
     append!(suggestions, complete_symbol(s, ffunc))
     return sort(unique(suggestions)), (dotpos+1):pos, true
 end
@@ -390,8 +502,18 @@ function shell_completions(string, pos)
     isempty(args.args[end].args) && return UTF8String[], 0:-1, false
     arg = args.args[end].args[end]
     if all(s -> isa(s, AbstractString), args.args[end].args)
-        # Treat this as a path (perhaps give a list of commands in the future as well?)
-        return complete_path(join(args.args[end].args), pos)
+        # Treat this as a path
+
+        # As Base.shell_parse throws away trailing spaces (unless they are escaped),
+        # we need to special case here.
+        # If the last char was a space, but shell_parse ignored it search on "".
+        ignore_last_word = arg != " " && scs[end] == ' '
+        prefix = ignore_last_word ? "" : join(args.args[end].args)
+
+        # Also try looking into the env path if the user wants to complete the first argument
+        use_envpath = !ignore_last_word && length(args.args) < 2
+
+        return complete_path(prefix, pos, use_envpath=use_envpath)
     elseif isexpr(arg, :escape) && (isexpr(arg.args[1], :incomplete) || isexpr(arg.args[1], :error))
         r = first(last_parse):prevind(last_parse, last(last_parse))
         partial = scs[r]

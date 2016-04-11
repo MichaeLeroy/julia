@@ -10,7 +10,7 @@
 # This section tests relpath computation. #
 ###########################################
 function test_relpath()
-    sep = Base.path_separator
+    sep = Base.Filesystem.path_separator
     filepaths = [
         "$(sep)home$(sep)user$(sep).julia$(sep)Test1$(sep)docs$(sep)api$(sep)Test1.md",
         "$(sep)home$(sep)user$(sep).julia$(sep)Test1$(sep)docs$(sep)api$(sep)lib$(sep)file1.md",
@@ -87,3 +87,7 @@ function test_relpath()
     @test_throws ArgumentError relpath("", "$(sep)home$(sep)user$(sep)dir_withendsep$(sep)")
 end
 test_relpath()
+
+# Test type stability
+@test isa(joinpath("a", "b"), ASCIIString)
+@test isa(joinpath(abspath("a"), "b"), ASCIIString)

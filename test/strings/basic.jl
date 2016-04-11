@@ -11,6 +11,8 @@
 @test endswith("abcd", "cd")
 @test !endswith("abcd", "dc")
 @test !endswith("cd", "abcd")
+@test startswith("ab\0cd", "ab\0c")
+@test !startswith("ab\0cd", "ab\0d")
 
 @test filter(x -> x ∈ ['f', 'o'], "foobar") == "foo"
 
@@ -84,6 +86,19 @@ end
 @test checkbounds("hello", 1:5)
 @test checkbounds("hello", [1:5;])
 
+# issue #15624 (indexing with out of bounds empty range)
+@test "hello"[10:9] == ""
+@test "hellø"[10:9] == ""
+@test SubString("hello", 1, 6)[10:9] == ""
+@test SubString("hello", 1, 0)[10:9] == ""
+@test SubString("hellø", 1, 6)[10:9] == ""
+@test SubString("hellø", 1, 0)[10:9] == ""
+@test ASCIIString("")[10:9] == ""
+@test UTF8String("")[10:9] == ""
+@test SubString("", 1, 6)[10:9] == ""
+@test SubString("", 1, 0)[10:9] == ""
+
+
 #=
 # issue #7764
 let
@@ -155,15 +170,6 @@ tstr = tstStringType("12");
 @test_throws ErrorException endof(tstr)
 @test_throws ErrorException next(tstr, Bool(1))
 
-## generic string uses only endof and next ##
-
-immutable GenericString <: AbstractString
-    string::AbstractString
-end
-
-Base.endof(s::GenericString) = endof(s.string)
-Base.next(s::GenericString, i::Int) = next(s.string, i)
-
 gstr = GenericString("12");
 @test typeof(string(gstr))==GenericString
 @test bytestring()==""
@@ -221,6 +227,9 @@ s = "abcde\uff\u2000\U1f596"
 sp = pointer(s)
 @test utf8(sp) == s
 @test utf8(sp,5) == "abcde"
+@test_throws ArgumentError ascii(sp)
+@test ascii(sp, 5) == "abcde"
+@test_throws ArgumentError ascii(sp, 6)
 @test typeof(utf8(sp)) == UTF8String
 
 @test get(tryparse(BigInt, "1234567890")) == BigInt(1234567890)
@@ -484,3 +493,18 @@ foobaz(ch) = reinterpret(Char, typemax(UInt32))
 @test_throws UnicodeError map(foomap, utf16(str))
 @test_throws UnicodeError map(foobar, utf16(str))
 @test_throws UnicodeError map(foobaz, utf16(str))
+
+@test "a".*["b","c"] == ["ab","ac"]
+@test ["b","c"].*"a" == ["ba","ca"]
+@test utf8("a").*["b","c"] == ["ab","ac"]
+@test "a".*map(utf8,["b","c"]) == ["ab","ac"]
+@test ["a","b"].*["c","d"]' == ["ac" "ad"; "bc" "bd"]
+
+# Make sure NULL pointer are handled consistently by
+# `bytestring`, `ascii` and `utf8`
+@test_throws ArgumentError bytestring(Ptr{UInt8}(0))
+@test_throws ArgumentError bytestring(Ptr{UInt8}(0), 10)
+@test_throws ArgumentError ascii(Ptr{UInt8}(0))
+@test_throws ArgumentError ascii(Ptr{UInt8}(0), 10)
+@test_throws ArgumentError utf8(Ptr{UInt8}(0))
+@test_throws ArgumentError utf8(Ptr{UInt8}(0), 10)

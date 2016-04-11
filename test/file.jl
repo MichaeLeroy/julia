@@ -13,6 +13,16 @@ subdir = joinpath(dir, "adir")
 mkdir(subdir)
 subdir2 = joinpath(dir, "adir2")
 mkdir(subdir2)
+@test_throws SystemError mkdir(file)
+let err = nothing
+    try
+        mkdir(file)
+    catch err
+        io = IOBuffer()
+        showerror(io, err)
+        @test startswith(takebuf_string(io), "SystemError (with $file): mkdir:")
+    end
+end
 
 if @unix? true : (Base.windows_version() >= Base.WINDOWS_VISTA_VER)
     dirlink = joinpath(dir, "dirlink")
@@ -46,13 +56,50 @@ end
 @test !isdir(file)
 @test isfile(file)
 @test !islink(file)
-@test isreadable(file)
-@test iswritable(file)
+
+@test filemode(file) & 0o444 > 0 # readable
+@test filemode(file) & 0o222 > 0 # writable
 chmod(file, filemode(file) & 0o7555)
-@test !iswritable(file)
+@test filemode(file) & 0o222 == 0
 chmod(file, filemode(file) | 0o222)
-@test !isexecutable(file)
+@test filemode(file) & 0o111 == 0
 @test filesize(file) == 0
+
+@windows_only begin
+    permissions = 0o444
+    @test filemode(dir) & 0o777 != permissions
+    @test filemode(subdir) & 0o777 != permissions
+    @test filemode(file) & 0o777 != permissions
+    chmod(dir, permissions, recursive=true)
+    @test filemode(dir) & 0o777 == permissions
+    @test filemode(subdir) & 0o777 == permissions
+    @test filemode(file) & 0o777 == permissions
+    chmod(dir, 0o666, recursive=true)  # Reset permissions in case someone wants to use these later
+end
+@unix_only begin
+    mktempdir() do tmpdir
+        tmpfile=joinpath(tmpdir, "tempfile.txt")
+        touch(tmpfile)
+        chmod(tmpfile, 0o707)
+        linkfile=joinpath(dir, "tempfile.txt")
+        symlink(tmpfile, linkfile)
+        permissions=0o776
+        @test filemode(dir) & 0o777 != permissions
+        @test filemode(subdir) & 0o777 != permissions
+        @test filemode(file) & 0o777 != permissions
+        @test filemode(linkfile) & 0o777 != permissions
+        @test filemode(tmpfile) & 0o777 != permissions
+        chmod(dir, permissions, recursive=true)
+        @test filemode(dir) & 0o777 == permissions
+        @test filemode(subdir) & 0o777 == permissions
+        @test filemode(file) & 0o777 == permissions
+        @test lstat(link).mode & 0o777 != permissions  # Symbolic links are not modified.
+        @test filemode(linkfile) & 0o777 != permissions  # Symbolic links are not followed.
+        @test filemode(tmpfile) & 0o777 != permissions
+        rm(linkfile)
+    end
+end
+
 # On windows the filesize of a folder is the accumulation of all the contained
 # files and is thus zero in this case.
 @windows_only @test filesize(dir) == 0
@@ -89,6 +136,7 @@ cp(newfile, c_file)
 @test isdir(c_subdir)
 @test isfile(c_file)
 @test_throws SystemError rm(c_tmpdir)
+@test_throws SystemError rm(c_tmpdir, force=true)
 
 # create temp dir in specific directory
 d_tmpdir = mktempdir(c_tmpdir)
@@ -103,7 +151,27 @@ close(f)
 
 rm(c_tmpdir, recursive=true)
 @test !isdir(c_tmpdir)
+@test_throws Base.UVError rm(c_tmpdir)
+@test rm(c_tmpdir, force=true) === nothing
+@test_throws Base.UVError rm(c_tmpdir, recursive=true)
+@test rm(c_tmpdir, force=true, recursive=true) === nothing
 
+# chown will give an error if the user does not have permissions to change files
+@unix_only if get(ENV, "USER", "") == "root" || get(ENV, "HOME", "") == "/root"
+    chown(file, -2, -1)  # Change the file owner to nobody
+    @test stat(file).uid !=0
+    chown(file, 0, -2)  # Change the file group to nogroup (and owner back to root)
+    @test stat(file).gid !=0
+    @test stat(file).uid ==0
+    chown(file, -1, 0)
+    @test stat(file).gid ==0
+    @test stat(file).uid ==0
+else
+    @test_throws Base.UVError chown(file, -2, -1)  # Non-root user cannot change ownership to another user
+    @test_throws Base.UVError chown(file, -1, -2)  # Non-root user cannot change group to a group they are not a member of (eg: nogroup)
+end
+
+@windows_only @test chown(file, -2, -2) == nothing  # chown shouldn't cause any errors for Windows
 
 #######################################################################
 # This section tests file watchers.                                   #
@@ -145,6 +213,7 @@ function test_monitor_wait(tval)
         close(f)
     end
     fname, events = wait(fm)
+    close(fm)
     @test fname == basename(file)
     @test events.changed
 end
@@ -158,6 +227,7 @@ function test_monitor_wait_poll()
         close(f)
     end
     (old, new) = wait(pfw)
+    close(pfw)
     @test new.mtime - old.mtime > 2.5 - 1.5 # mtime may only have second-level accuracy (plus add some hysteresis)
 end
 
@@ -216,7 +286,7 @@ path = tempname()
 print(f, "Here is some text")
 close(f)
 @test isfile(p) == true
-@test readall(p) == "Here is some text"
+@test readstring(p) == "Here is some text"
 rm(p)
 
 let
@@ -284,7 +354,7 @@ function check_cp(orig_path::AbstractString, copied_path::AbstractString, follow
                 # copied_path must also be a file.
                 @test isfile(copied_path)
                 # copied_path must have same content
-                @test readall(orig_path) == readall(copied_path)
+                @test readstring(orig_path) == readstring(copied_path)
             end
         end
     elseif isdir(orig_path)
@@ -293,7 +363,7 @@ function check_cp(orig_path::AbstractString, copied_path::AbstractString, follow
         # copied_path must also be a file.
         @test isfile(copied_path)
         # copied_path must have same content
-        @test readall(orig_path) == readall(copied_path)
+        @test readstring(orig_path) == readstring(copied_path)
     end
 end
 
@@ -322,9 +392,7 @@ bfile = joinpath(dir, "b.txt")
 cp(afile, bfile)
 
 cfile = joinpath(dir, "c.txt")
-open(cfile, "w") do cf
-    write(cf, "This is longer than the contents of afile")
-end
+write(cfile, "This is longer than the contents of afile")
 cp(afile, cfile; remove_destination=true)
 
 a_stat = stat(afile)
@@ -395,13 +463,9 @@ if @unix? true : (Base.windows_version() >= Base.WINDOWS_VISTA_VER)
 
         cfile = joinpath(srcdir, "c.txt")
         file_txt = "This is some text with unicode - 这是一个文件"
-        open(cfile, "w") do cf
-            write(cf, file_txt)
-        end
+        write(cfile, file_txt)
         hidden_cfile = joinpath(hidden_srcsubdir, "c.txt")
-        open(hidden_cfile, "w") do cf
-            write(cf, file_txt)
-        end
+        write(hidden_cfile, file_txt)
 
         abs_dirlink_cp = joinpath(tmpdir, "abs_dirlink_cp")
         hidden_srcsubdir_cp = joinpath(tmpdir, ".hidden_srcsubdir_cp")
@@ -528,12 +592,9 @@ if @unix? true : (Base.windows_version() >= Base.WINDOWS_VISTA_VER)
         mkdir(subdir1)
 
         cfile = abspath(joinpath(maindir, "c.txt"))
-        open(cfile, "w") do cf
-            write(cf, "This is c.txt - 这是一个文件")
-        end
-        open(abspath(joinpath(targetdir, "file1.txt")), "w") do cf
-            write(cf, "This is file1.txt - 这是一个文件")
-        end
+        write(cfile, "This is c.txt - 这是一个文件")
+        write(abspath(joinpath(targetdir, "file1.txt")),
+              "This is file1.txt - 这是一个文件")
 
         abs_dl = joinpath(maindir, "abs_linkto_targetdir")
         symlink(targetdir, abs_dl)
@@ -601,12 +662,8 @@ end
         srcfile_new = joinpath(tmpdir, "srcfile_new.txt")
         hidden_srcfile_new = joinpath(tmpdir, ".hidden_srcfile_new.txt")
         file_txt = "This is some text with unicode - 这是一个文件"
-        open(srcfile, "w") do f
-            write(f, file_txt)
-        end
-        open(hidden_srcfile, "w") do f
-            write(f, file_txt)
-        end
+        write(srcfile, file_txt)
+        write(hidden_srcfile, file_txt)
         abs_filelink = joinpath(tmpdir, "abs_filelink")
         symlink(abspath(srcfile), abs_filelink)
         cd(tmpdir)
@@ -630,7 +687,7 @@ end
         islink(s) && @test readlink(s) == readlink(d)
         islink(s) && @test isabspath(readlink(s)) == isabspath(readlink(d))
         # all should contain the same
-        @test readall(s) == readall(d) == file_txt
+        @test readstring(s) == readstring(d) == file_txt
     end
 
     function mv_check(s, d, d_mv, file_txt; remove_destination=true)
@@ -648,7 +705,7 @@ end
         islink(s) && @test readlink(s) == readlink(d_mv)
         islink(s) && @test isabspath(readlink(s)) == isabspath(readlink(d_mv))
         # all should contain the same
-        @test readall(s) == readall(d_mv) == file_txt
+        @test readstring(s) == readstring(d_mv) == file_txt
         # d => d_mv same file/dir
         @test Base.samefile(stat_d, stat_d_mv)
     end
@@ -686,15 +743,13 @@ end
         # Test remove the existing path first and copy an other file
         otherfile = joinpath(tmpdir, "otherfile.txt")
         otherfile_content = "This is otherfile.txt with unicode - 这是一个文件"
-        open(otherfile, "w") do f
-            write(f, otherfile_content)
-        end
+        write(otherfile, otherfile_content)
         for d in test_new_paths1
             cp(otherfile, d; remove_destination=true, follow_symlinks=false)
             # Expect no link because a file is copied (follow_symlinks=false does not effect this)
             @test isfile(d) && !islink(d)
             # all should contain otherfile_content
-            @test readall(d) == otherfile_content
+            @test readstring(d) == otherfile_content
         end
     end
     # mv ----------------------------------------------------
@@ -738,12 +793,9 @@ end
         mkdir(subdir1)
 
         cfile = abspath(joinpath(maindir, "c.txt"))
-        open(cfile, "w") do cf
-            write(cf, "This is c.txt - 这是一个文件")
-        end
-        open(abspath(joinpath(targetdir, "file1.txt")), "w") do cf
-            write(cf, "This is file1.txt - 这是一个文件")
-        end
+        write(cfile, "This is c.txt - 这是一个文件")
+        write(abspath(joinpath(targetdir, "file1.txt")),
+                      "This is file1.txt - 这是一个文件")
 
         abs_fl = joinpath(maindir, "abs_linkto_c.txt")
         symlink(cfile, abs_fl)
@@ -757,7 +809,7 @@ end
         rel_dl = "rel_linkto_targetdir"
         rel_dir = joinpath("..", "targetdir")
         symlink(rel_dir, rel_dl)
-        rel_file_read_txt = readall(rel_file)
+        rel_file_read_txt = readstring(rel_file)
         cd(pwd_)
         # Setup copytodir
         copytodir = joinpath(tmpdir, "copytodir")
@@ -835,12 +887,12 @@ close(f)
 f = open(file, "r")
 test_LibcFILE(convert(Libc.FILE, f))
 close(f)
-@unix_only f = RawFD(ccall(:open, Cint, (Ptr{UInt8}, Cint), file, Base.FS.JL_O_RDONLY))
-@windows_only f = RawFD(ccall(:_open, Cint, (Ptr{UInt8}, Cint), file, Base.FS.JL_O_RDONLY))
+@unix_only f = RawFD(ccall(:open, Cint, (Ptr{UInt8}, Cint), file, Base.Filesystem.JL_O_RDONLY))
+@windows_only f = RawFD(ccall(:_open, Cint, (Ptr{UInt8}, Cint), file, Base.Filesystem.JL_O_RDONLY))
 test_LibcFILE(Libc.FILE(f,Libc.modestr(true,false)))
 
 # issue #10994: pathnames cannot contain embedded NUL chars
-for f in (mkdir, cd, Base.FS.unlink, readlink, rm, touch, readdir, mkpath, stat, lstat, ctime, mtime, filemode, filesize, uperm, gperm, operm, touch, isblockdev, ischardev, isdir, isexecutable, isfifo, isfile, islink, ispath, isreadable, issetgid, issetuid, issocket, issticky, iswritable, realpath, watch_file, poll_file)
+for f in (mkdir, cd, Base.Filesystem.unlink, readlink, rm, touch, readdir, mkpath, stat, lstat, ctime, mtime, filemode, filesize, uperm, gperm, operm, touch, isblockdev, ischardev, isdir, isfifo, isfile, islink, ispath, issetgid, issetuid, issocket, issticky, realpath, watch_file, poll_file)
     @test_throws ArgumentError f("adir\0bad")
 end
 @test_throws ArgumentError chmod("ba\0d", 0o222)
@@ -981,10 +1033,10 @@ let n = tempname()
     w = open(n, "a")
     io = open(n)
     write(w, "A"); flush(w)
-    @test readbytes(io) == UInt8[0x41]
-    @test readbytes(io) == UInt8[]
+    @test read(io) == UInt8[0x41]
+    @test read(io) == UInt8[]
     write(w, "A"); flush(w)
-    @test readbytes(io) == UInt8[0x41]
+    @test read(io) == UInt8[0x41]
     close(io); close(w)
     rm(n)
 end
@@ -1031,7 +1083,7 @@ function test_13559()
     run(`mkfifo $fn`)
     # use subprocess to write 127 bytes to FIFO
     writer_cmds = "x=open(\"$fn\", \"w\"); for i=1:127 write(x,0xaa); flush(x); sleep(0.1) end; close(x); quit()"
-    open(`$(Base.julia_cmd()) -e $writer_cmds`)
+    open(pipeline(`$(Base.julia_cmd()) -e $writer_cmds`, stderr=STDERR))
     #quickly read FIFO, draining it and blocking but not failing with EOFError yet
     r = open(fn, "r")
     # 15 proper reads
@@ -1044,50 +1096,3 @@ function test_13559()
     rm(fn)
 end
 @unix_only test_13559()
-
-function test_read_nbyte()
-    fn = tempname()
-    # Write one byte. One byte read should work once
-    # but 2-byte read should throw EOFError.
-    f = open(fn, "w+") do f
-        write(f, 0x55)
-        flush(f)
-        seek(f, 0)
-        @test read(f, UInt8) == 0x55
-        @test_throws EOFError read(f, UInt8)
-        seek(f, 0)
-        @test_throws EOFError read(f, UInt16)
-    end
-    # Write 2 more bytes. Now 2-byte read should work once
-    # but 4-byte read should fail with EOFError.
-    open(fn, "a+") do f
-        write(f, 0x4444)
-        flush(f)
-        seek(f, 0)
-        @test read(f, UInt16) == 0x4455
-        @test_throws EOFError read(f, UInt16)
-        seek(f,0)
-        @test_throws EOFError read(f, UInt32)
-    end
-    # Write 4 more bytes. Now 4-byte read should work once
-    # but 8-byte read should fail with EOFError.
-    open(fn, "a+") do f
-        write(f, 0x33333333)
-        flush(f)
-        seek(f, 0)
-        @test read(f, UInt32) == 0x33444455
-        @test_throws EOFError read(f, UInt32)
-        seek(f,0)
-        @test_throws EOFError read(f, UInt64)
-    end
-    # Writing one more byte should allow an 8-byte
-    # read to proceed.
-    open(fn, "a+") do f
-        write(f, 0x22)
-        flush(f)
-        seek(f, 0)
-        @test read(f, UInt64) == 0x2233333333444455
-    end
-    rm(fn)
-end
-test_read_nbyte()

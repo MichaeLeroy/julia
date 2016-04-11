@@ -14,15 +14,14 @@ extern "C" {
 #define PROFILE_JL_THREADING            1
 
 // thread ID
-extern JL_THREAD int16_t ti_tid;
+#define ti_tid (jl_get_ptls_states()->tid)
 extern jl_thread_task_state_t *jl_all_task_states;
-extern DLLEXPORT int jl_n_threads;  // # threads we're actually using
+extern JL_DLLEXPORT int jl_n_threads;  // # threads we're actually using
 
 #ifdef JULIA_ENABLE_THREADING
 // GC
 extern struct _jl_thread_heap_t **jl_all_heaps;
 #endif
-extern jl_gcframe_t ***jl_all_pgcstacks;
 
 // thread state
 enum {
@@ -36,7 +35,6 @@ typedef struct {
     int16_t volatile    state;
     int16_t             tid;
     ti_threadgroup_t    *tg;
-
 } ti_threadarg_t;
 
 
@@ -53,20 +51,14 @@ typedef struct {
     jl_function_t       *fun;
     jl_svec_t           *args;
     jl_value_t          *ret;
-
+    jl_module_t         *current_module;
 } ti_threadwork_t;
 
-
-// basic functions for thread creation
-int  ti_threadcreate(uv_thread_t *thread_id, int proc_num,
-                     void (*thread_fun)(void *), void *thread_arg);
-void ti_threadsetaffinity(uint64_t thread_id, int proc_num);
 
 // thread function
 void ti_threadfun(void *arg);
 
 // helpers for thread function
-void ti_initthread(int16_t tid);
 jl_value_t *ti_runthread(jl_function_t *f, jl_svec_t *args, size_t nargs);
 
 #ifdef __cplusplus
@@ -74,4 +66,3 @@ jl_value_t *ti_runthread(jl_function_t *f, jl_svec_t *args, size_t nargs);
 #endif
 
 #endif  /* THREADING_H */
-

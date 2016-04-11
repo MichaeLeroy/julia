@@ -5,7 +5,7 @@ module Broadcast
 using ..Cartesian
 using Base: promote_op, promote_eltype, promote_eltype_op, @get!, _msk_end, unsafe_bitgetindex
 using Base: AddFun, SubFun, MulFun, LDivFun, RDivFun, PowFun
-import Base: .+, .-, .*, ./, .\, .//, .==, .<, .!=, .<=, .%, .<<, .>>, .^
+import Base: .+, .-, .*, ./, .\, .//, .==, .<, .!=, .<=, .÷, .%, .<<, .>>, .^
 export broadcast, broadcast!, broadcast_function, broadcast!_function, bitbroadcast
 export broadcast_getindex, broadcast_setindex!
 
@@ -103,16 +103,34 @@ end
 const bitcache_chunks = 64 # this can be changed
 const bitcache_size = 64 * bitcache_chunks # do not change this
 
+function bpack(z::UInt64)
+    z |= z >>> 7
+    z |= z >>> 14
+    z |= z >>> 28
+    z &= 0xFF
+    return z
+end
+
 function dumpbitcache(Bc::Vector{UInt64}, bind::Int, C::Vector{Bool})
     ind = 1
     nc = min(bitcache_chunks, length(Bc)-bind+1)
-    for i = 1:nc
-        u = UInt64(1)
+    C8 = reinterpret(UInt64, C)
+    nc8 = (nc >>> 3) << 3
+    @inbounds for i = 1:nc8
         c = UInt64(0)
-        for j = 1:64
-            C[ind] && (c |= u)
+        for j = 0:8:63
+            c |= (bpack(C8[ind]) << j)
             ind += 1
-            u <<= 1
+        end
+        Bc[bind] = c
+        bind += 1
+    end
+    ind = (ind-1) << 3 + 1
+    @inbounds for i = (nc8+1):nc
+        c = UInt64(0)
+        for j = 0:63
+            c |= (UInt64(C[ind]) << j)
+            ind += 1
         end
         Bc[bind] = c
         bind += 1
@@ -285,6 +303,7 @@ end
 
 ## elementwise operators ##
 
+.÷(A::AbstractArray, B::AbstractArray) = broadcast(÷, A, B)
 .%(A::AbstractArray, B::AbstractArray) = broadcast(%, A, B)
 .<<(A::AbstractArray, B::AbstractArray) = broadcast(<<, A, B)
 .>>(A::AbstractArray, B::AbstractArray) = broadcast(>>, A, B)
@@ -361,6 +380,7 @@ for (f, cachef, scalarf) in ((:.==, :bitcache_eq , :(==)),
                              (:.< , :bitcache_lt , :<   ),
                              (:.!=, :bitcache_neq, :!=  ),
                              (:.<=, :bitcache_le , :<=  ))
+    @eval ($cachef)(A::AbstractArray, B::AbstractArray, l::Int, ind::Int, C::Vector{Bool}) = 0
     for (sigA, sigB, expA, expB, shape) in ((:Any, :AbstractArray,
                                              :A, :(B[ind]),
                                              :(size(B))),
@@ -368,7 +388,6 @@ for (f, cachef, scalarf) in ((:.==, :bitcache_eq , :(==)),
                                              :(A[ind]), :B,
                                              :(size(A))))
         @eval begin
-            ($cachef)(A::AbstractArray, B::AbstractArray, l::Int, ind::Int, C::Vector{Bool}) = 0
             function ($cachef)(A::$sigA, B::$sigB, l::Int, ind::Int, C::Vector{Bool})
                 left = l - ind + 1
                 @inbounds begin

@@ -11,17 +11,18 @@ string() = ""
 string(s::AbstractString) = s
 
 bytestring() = ""
-bytestring(s::Vector{UInt8}) = bytestring(pointer(s),length(s))
+bytestring(s::Vector{UInt8}) =
+    ccall(:jl_pchar_to_string, Ref{ByteString}, (Ptr{UInt8},Int), s, length(s))
 
 function bytestring(p::Union{Ptr{UInt8},Ptr{Int8}})
-    p == C_NULL ? throw(ArgumentError("cannot convert NULL to string")) :
-    ccall(:jl_cstr_to_string, Any, (Ptr{UInt8},), p)::ByteString
+    p == C_NULL && throw(ArgumentError("cannot convert NULL to string"))
+    ccall(:jl_cstr_to_string, Ref{ByteString}, (Cstring,), p)
 end
 bytestring(s::Cstring) = bytestring(convert(Ptr{UInt8}, s))
 
 function bytestring(p::Union{Ptr{UInt8},Ptr{Int8}},len::Integer)
-    p == C_NULL ? throw(ArgumentError("cannot convert NULL to string")) :
-    ccall(:jl_pchar_to_string, Any, (Ptr{UInt8},Int), p, len)::ByteString
+    p == C_NULL && throw(ArgumentError("cannot convert NULL to string"))
+    ccall(:jl_pchar_to_string, Ref{ByteString}, (Ptr{UInt8},Int), p, len)
 end
 
 convert(::Type{Vector{UInt8}}, s::AbstractString) = bytestring(s).data
@@ -39,7 +40,7 @@ getindex(s::AbstractString, i::Integer) = s[Int(i)]
 getindex{T<:Integer}(s::AbstractString, r::UnitRange{T}) = s[Int(first(r)):Int(last(r))]
 # TODO: handle other ranges with stride ±1 specially?
 getindex(s::AbstractString, v::AbstractVector) =
-    sprint(length(v), io->(for i in v write(io,s[i]) end))
+    sprint(length(v), io->(for i in v; write(io,s[i]) end))
 
 symbol(s::AbstractString) = symbol(bytestring(s))
 
@@ -48,6 +49,8 @@ sizeof(s::AbstractString) = error("type $(typeof(s)) has no canonical binary rep
 eltype{T<:AbstractString}(::Type{T}) = Char
 
 (*)(s1::AbstractString, ss::AbstractString...) = string(s1, ss...)
+(.*){T<:AbstractString}(v::Vector{T},s::AbstractString) = [i*s for i in v]
+(.*){T<:AbstractString}(s::AbstractString,v::Vector{T}) = [s*i for i in v]
 
 length(s::DirectIndexString) = endof(s)
 function length(s::AbstractString)
@@ -267,4 +270,3 @@ function filter(f, s::AbstractString)
     end
     takebuf_string(out)
 end
-

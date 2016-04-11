@@ -57,8 +57,9 @@ Here are some simple examples using arithmetic operators:
     julia> 3*2/12
     0.5
 
-(By convention, we tend to space less tightly binding operators less
-tightly, but there are no syntactic constraints.)
+(By convention, we tend to space operators more tightly if they get applied before
+other nearby operators. For instance, we would generally write ``-x + 2`` to reflect
+that first ``x`` gets negated, and then ``2`` is added to that result.)
 
 Bitwise Operators
 -----------------
@@ -271,8 +272,8 @@ that Julia does them correctly.
 For other types, :func:`isequal` defaults to calling :func:`==`, so if you want to
 define equality for your own types then you only need to add a :func:`==`
 method.  If you define your own equality function, you should probably
-define a corresponding :func:`hash` method to ensure that `isequal(x,y)`
-implies `hash(x) == hash(y)`.
+define a corresponding :func:`hash` method to ensure that ``isequal(x,y)``
+implies ``hash(x) == hash(y)``.
 
 Chaining comparisons
 ~~~~~~~~~~~~~~~~~~~~
@@ -347,6 +348,73 @@ Control flow      ``&&`` followed by ``||`` followed by ``?``
 Assignments       ``= += -= *= /= //= \= ^= ÷= %= |= &= $= <<= >>= >>>=`` and ``.+= .-= .*= ./= .//= .\= .^= .÷= .%=``
 ================= =============================================================================================
 
+.. _man-numerical-conversions:
+
+Numerical Conversions
+---------------------
+
+Julia supports three forms of numerical conversion, which differ in their
+handling of inexact conversions.
+
+- The notation ``T(x)`` or ``convert(T,x)`` converts ``x`` to a value of type ``T``.
+
+  -  If ``T`` is a floating-point type, the result is the nearest representable
+     value, which could be positive or negative infinity.
+
+  -  If ``T`` is an integer type, an ``InexactError`` is raised if ``x``
+     is not representable by ``T``.
+
+
+- ``x % T`` converts an integer ``x`` to a value of integer type ``T``
+  congruent to ``x`` modulo ``2^n``, where ``n`` is the number of bits in ``T``.
+  In other words, the binary representation is truncated to fit.
+
+- The :ref:`man-rounding-functions` take a type ``T`` as an optional argument.
+  For example, ``round(Int,x)`` is a shorthand for ``Int(round(x))``.
+
+The following examples show the different forms.
+
+.. doctest::
+
+    julia> Int8(127)
+    127
+
+    julia> Int8(128)
+    ERROR: InexactError()
+     in call at ./essentials.jl:58
+     in eval at ./boot.jl:263
+
+    julia> Int8(127.0)
+    127
+
+    julia> Int8(3.14)
+    ERROR: InexactError()
+     in call at ./essentials.jl:58
+     in eval at ./boot.jl:263
+
+    julia> Int8(128.0)
+    ERROR: InexactError()
+     in call at ./essentials.jl:58
+     in eval at ./boot.jl:263
+
+    julia> 127 % Int8
+    127
+
+    julia> 128 % Int8
+    -128
+
+    julia> round(Int8,127.4)
+    127
+
+    julia> round(Int8,127.6)
+    ERROR: InexactError()
+     in trunc at ./float.jl:357
+     in round at ./float.jl:177
+     in eval at ./boot.jl:263
+
+See :ref:`man-conversion-and-promotion` for how to define your own
+conversions and promotions.
+
 .. _man-elementary-functions:
 
 Elementary Functions
@@ -357,6 +425,8 @@ operators. These mathematical operations are defined over as broad a
 class of numerical values as permit sensible definitions, including
 integers, floating-point numbers, rationals, and complexes, wherever
 such definitions make sense.
+
+.. _man-rounding-functions:
 
 Rounding functions
 ~~~~~~~~~~~~~~~~~~
@@ -388,8 +458,8 @@ Function                     Description
 :func:`mod2pi(x) <mod2pi>`   modulus with respect to 2pi;  ``0 <= mod2pi(x)  < 2pi``
 :func:`divrem(x,y) <divrem>` returns ``(div(x,y),rem(x,y))``
 :func:`fldmod(x,y) <fldmod>` returns ``(fld(x,y),mod(x,y))``
-:func:`gcd(x,y...) <gcd>`    greatest common divisor of ``x``, ``y``,...; sign matches ``x``
-:func:`lcm(x,y...) <lcm>`    least common multiple of ``x``, ``y``,...; sign matches ``x``
+:func:`gcd(x,y...) <gcd>`    greatest positive common divisor of ``x``, ``y``,...
+:func:`lcm(x,y...) <lcm>`    least positive common multiple of ``x``, ``y``,...
 ============================ =======================================================================
 
 Sign and absolute value functions

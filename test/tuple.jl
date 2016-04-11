@@ -1,5 +1,6 @@
 # This file is a part of Julia. License is MIT: http://julialang.org/license
 
+@test convert(Tuple, (1,2)) == (1,2)
 ## indexing ##
 @test length(()) === 0
 @test length((1,)) === 1
@@ -37,6 +38,10 @@
 
 @test getindex((5,6,7,8), []) === ()
 
+## filling to specified length
+@test @inferred(Base.fill_to_length((1,2,3), -1, Val{5})) == (1,2,3,-1,-1)
+@test_throws ErrorException Base.fill_to_length((1,2,3), -1, Val{2})
+
 ## iterating ##
 @test start((1,2,3)) === 1
 
@@ -49,6 +54,8 @@
 @test_throws BoundsError next((5,6,7), 0)
 @test_throws BoundsError next((), 1)
 
+@test collect(eachindex((2,5,"foo"))) == collect(1:3)
+@test collect(eachindex((2,5,"foo"), (1,2,5,7))) == collect(1:4)
 
 
 ## eltype ##
@@ -124,15 +131,15 @@ foo(x, y, z) = x + y + z
 @test prod((1,2,3)) === 6
 
 @test all(()) === true
-@test all((false)) === false
-@test all((true)) === true
+@test all((false,)) === false
+@test all((true,)) === true
 @test all((true, true)) === true
 @test all((true, false)) === false
 @test all((false, false)) === false
 
 @test any(()) === false
-@test any((true)) === true
-@test any((false)) === false
+@test any((true,)) === true
+@test any((false,)) === false
 @test any((true, true)) === true
 @test any((true, false)) === true
 @test any((false, false)) === false

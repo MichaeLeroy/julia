@@ -3,6 +3,7 @@
 module Markdown
 
 import Base: writemime, ==
+import Core: @doc_str
 
 include("parse/config.jl")
 include("parse/util.jl")
@@ -23,7 +24,7 @@ include("render/terminal/render.jl")
 export readme, license, @md_str, @doc_str
 
 parse(markdown::AbstractString; flavor = julia) = parse(IOBuffer(markdown), flavor = flavor)
-parse_file(file::AbstractString; flavor = julia) = parse(readall(file), flavor = flavor)
+parse_file(file::AbstractString; flavor = julia) = parse(readstring(file), flavor = flavor)
 
 readme(pkg::AbstractString; flavor = github) = parse_file(Pkg.dir(pkg, "README.md"), flavor = flavor)
 readme(pkg::Module; flavor = github) = readme(string(pkg), flavor = flavor)
@@ -53,8 +54,8 @@ end
 doc_str(md, file, mod) = (md.meta[:path] = file; md.meta[:module] = mod; md)
 doc_str(md::AbstractString, file, mod) = doc_str(parse(md), file, mod)
 
-macro doc_str(s, t...)
-    :(doc_str($(mdexpr(s, t...)), @__FILE__, current_module()))
+macro doc_str(s::AbstractString, t...)
+    :($(doc_str)($(mdexpr(s, t...)), $(Base).@__FILE__, $(current_module)()))
 end
 
 function Base.display(d::Base.REPL.REPLDisplay, md::Vector{MD})

@@ -4,12 +4,13 @@ Julia ASTs
 
 .. currentmodule:: Base
 
-Julia has two AST representations. First there is a surface syntax AST returned
+Julia has two representations of code. First there is a surface syntax AST returned
 by the parser (e.g. the :func:`parse` function), and manipulated by macros.
 It is a structured representation of code as it is written,
 constructed by ``julia-parser.scm`` from a character stream.
-Next there is a lowered AST which is used by type inference and code generation.
-In the lowered form, there are generally fewer types of nodes, all macros
+Next there is a lowered form, or IR (intermediate representation), which is used by
+type inference and code generation.
+In the lowered form there are fewer types of nodes, all macros
 are expanded, and all control flow is converted to explicit branches and sequences
 of statements. The lowered form is constructed by ``julia-syntax.scm``.
 
@@ -21,17 +22,17 @@ significant rearrangement of the input syntax.
 Lowered form
 ------------
 
-The following data types exist in lowered ASTs:
+The following data types exist in lowered form:
 
 ``Expr``
     has a node type indicated by the ``head`` field, and an ``args`` field
     which is a ``Vector{Any}`` of subexpressions.
 
-``Symbol``
-    used to name local variables and static parameters within a function.
+``Slot``
+    identifies arguments and local variables by consecutive numbering.
 
-``LambdaStaticData``
-    wraps the AST of each function, including inner functions.
+``LambdaInfo``
+    wraps the IR of each method.
 
 ``LineNumberNode``
     line number metadata
@@ -54,15 +55,13 @@ The following data types exist in lowered ASTs:
     forces a name to be resolved as a global in Base. This is now mostly
     redundant with ``GlobalRef(Base, :x)``.
 
-``SymbolNode``
-    used to annotate a local variable with a type
-
 ``GenSym``
     refers to a consecutively-numbered (starting at 0) static single assignment
     (SSA) variable inserted by the compiler.
 
 ``NewvarNode``
-    marks a point where a closed variable needs to have a new box allocated.
+    Marks a point where a variable is created. This has the effect of resetting a
+    variable to undefined.
 
 
 Expr types
@@ -73,6 +72,9 @@ These symbols appear in the ``head`` field of ``Expr``\s in lowered form.
 ``call``
     function call. ``args[1]`` is the function to call, ``args[2:end]`` are the
     arguments.
+
+``static_parameter``
+    reference a static parameter by index.
 
 ``line``
     line number and file name metadata. Unlike a ``LineNumberNode``, can also
@@ -87,20 +89,34 @@ These symbols appear in the ``head`` field of ``Expr``\s in lowered form.
 ``method``
     adds a method to a generic function and assigns the result if necessary.
 
-    ``args[1]`` - function name (symbol), or a ``GlobalRef``, or an ``Expr``
-    with head ``kw``.  In the ``(kw f)`` case, the method is actually a keyword
-    argument sorting function for ``f``. It will be stored instead in
-    ``generic_function->env->kwsorter``.
+    Has a 1-argument form and a 4-argument form. The 1-argument form arises
+    from the syntax ``function foo end``. In the 1-argument form, the
+    argument is a symbol. If this symbol already names a function in the
+    current scope, nothing happens. If the symbol is undefined, a new function
+    is created and assigned to the identifier specified by the symbol.
+    If the symbol is defined but names a non-function, an error is raised.
+    The definition of "names a function" is that the binding is constant, and
+    refers to an object of singleton type. The rationale for this is that an
+    instance of a singleton type uniquely identifies the type to add the method
+    to. When the type has fields, it wouldn't be clear whether the method was
+    being added to the instance or its type.
 
-    If ``method`` has only one argument, it corresponds to the form ``function
-    foo end`` and only creates a function without adding any methods.
+    The 4-argument form has the following arguments:
+    ``args[1]`` - A function name, or ``false`` if unknown. If a symbol,
+    then the expression first behaves like the 1-argument form above.
+    This argument is ignored from then on.
+    When this is ``false``, it means a method is being added strictly by type,
+    ``(::T)(x) = x``.
 
     ``args[2]`` - a ``SimpleVector`` of argument type data. ``args[2][1]`` is
-    a ``Tuple type`` of the argument types, and ``args[2][2]`` is a
+    a ``Tuple`` type of the argument types, and ``args[2][2]`` is a
     ``SimpleVector`` of type variables corresponding to the method's static
     parameters.
 
-    ``args[3]`` - a ``LambdaStaticData`` of the method itself.
+    ``args[3]`` - a ``LambdaInfo`` of the method itself. For "out of scope"
+    method definitions (adding a method to a function that also has methods defined
+    in different scopes) this is an expression that evaluates to a ``:lambda``
+    expression.
 
     ``args[4]`` - ``true`` or ``false``, identifying whether the method is
     staged (``@generated function``)
@@ -139,11 +155,16 @@ These symbols appear in the ``head`` field of ``Expr``\s in lowered form.
 ``leave``
     pop exception handlers. ``args[1]`` is the number of handlers to pop.
 
-``boundscheck``
+``inbounds``
     controls turning bounds checks on or off. A stack is maintained; if the
     first argument of this expression is true or false (``true`` means bounds
-    checks are enabled), it is pushed onto the stack. If the first argument is
+    checks are disabled), it is pushed onto the stack. If the first argument is
     ``:pop``, the stack is popped.
+
+``boundscheck``
+    indicates the beginning or end of a section of code that performs a bounds
+    check. Like ``inbounds``, a stack is maintained, and the second argument
+    can be one of: ``true``, ``false``, or ``:pop``.
 
 ``copyast``
     part of the implementation of quasi-quote. The argument is a surface syntax
@@ -154,25 +175,20 @@ These symbols appear in the ``head`` field of ``Expr``\s in lowered form.
     ``:inline`` and ``:noinline``.
 
 
-LambdaStaticData
-~~~~~~~~~~~~~~~~
+LambdaInfo
+~~~~~~~~~~
 
-Has an ``->ast`` field pointing to an ``Expr`` with head ``lambda``. This
-``Expr`` has the following layout:
+``sparam_syms`` - The names (symbols) of static parameters.
 
-``args[1]``
-    ``Vector{Any}`` of argument name symbols. For varargs functions, the last
-    element is actually an ``Expr`` with head ``...``. The argument of this
-    ``Expr`` is an ``Expr`` with head ``::``. The first argument of ``::`` is a
-    symbol (the argument name), and the second argument is a type declaration.
+``sparam_vals`` - The values of the static parameters (once known), indexed by ``sparam_syms``.
 
-``args[2]``
-    A ``Vector{Any}`` with variable information:
+``code`` - An ``Any`` array of statements, or a UInt8 array with a compressed representation of the code.
 
-    ``args[2][1]`` - An array of 3-element ``varinfo`` arrays, one for each
-    argument or local variable. A ``varinfo`` array has the form ``Any[:name,
-    type, bits]``. The ``bits`` field is an integer
-    describing variable properties as follows:
+``slotnames`` - An array of symbols giving the name of each slot (argument or local variable).
+
+``slottypes`` - An array of types for the slots.
+
+``slotflags`` - A UInt8 array of slot properties, represented as bit flags:
     - 1  - captured (closed over)
     - 2  - assigned (only false if there are *no* assignment statements with this var on the left)
     - 4  - assigned by an inner function
@@ -180,17 +196,13 @@ Has an ``->ast`` field pointing to an ``Expr`` with head ``lambda``. This
     - 16 - statically assigned once
     - 32 - might be used before assigned. This flag is only valid after type inference.
 
-    ``args[2][2]`` - An array of ``varinfo`` triples for each outer variable
-    this function captures.
+``gensymtypes`` - Either an array or an Int giving the number of compiler-inserted
+    temporary locations in the function. If an array, specifies a type for each location.
 
-    ``args[2][3]`` - The types of variables represented by ``GenSym`` objects.
-    Given ``GenSym`` ``g``, its type will be at ``args[2][3][g.id+1]``.
+``nargs`` - The number of argument slots. The first ``nargs`` entries of the slots
+    arrays refer to arguments.
 
-    ``args[2][4]`` - The names (symbols) of static parameters.
-
-``args[3]``
-    an ``Expr`` with head ``body`` whose arguments are the statements
-    comprising the function body.
+``isva`` - A boolean indicating whether the function is variadic.
 
 
 Surface syntax AST
@@ -300,6 +312,7 @@ x"y"                     (macrocall @x_str "y")
 x"y"z                    (macrocall @x_str "y" "z")
 "x = $x"                 (string "x = " x)
 \`a b c\`                (macrocall @cmd "a b c")
+x ~ distr                (macrocall @~ x distr)
 =======================  ====================================
 
 Doc string syntax::

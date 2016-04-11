@@ -2,13 +2,13 @@
 
 module Read
 
-import ...LibGit2, ..Cache, ..Reqs, ...Pkg.PkgError
+import ...LibGit2, ..Cache, ..Reqs, ...Pkg.PkgError, ..Dir
 using ..Types
 
-readstrip(path...) = strip(readall(joinpath(path...)))
+readstrip(path...) = strip(readstring(joinpath(path...)))
 
-url(pkg::AbstractString) = readstrip("METADATA", pkg, "url")
-sha1(pkg::AbstractString, ver::VersionNumber) = readstrip("METADATA", pkg, "versions", string(ver), "sha1")
+url(pkg::AbstractString) = readstrip(Dir.path("METADATA"), pkg, "url")
+sha1(pkg::AbstractString, ver::VersionNumber) = readstrip(Dir.path("METADATA"), pkg, "versions", string(ver), "sha1")
 
 function available(names=readdir("METADATA"))
     pkgs = Dict{ByteString,Dict{VersionNumber,Available}}()
@@ -104,7 +104,18 @@ function installed_version(pkg::AbstractString, prepo::LibGit2.GitRepo, avail::D
     ispath(pkg,".git") || return typemin(VersionNumber)
 
     # get package repo head hash
-    head = string(LibGit2.head_oid(prepo))
+    local head
+    try
+        head = string(LibGit2.head_oid(prepo))
+    catch ex
+        # refs/heads/master does not exist
+        if isa(ex,LibGit2.GitError) &&
+            ex.code == LibGit2.Error.EUNBORNBRANCH
+            head = ""
+        else
+            rethrow(ex)
+        end
+    end
     isempty(head) && return typemin(VersionNumber)
 
     vers = collect(keys(filter((ver,info)->info.sha1==head, avail)))

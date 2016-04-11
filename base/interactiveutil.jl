@@ -2,7 +2,7 @@
 
 # editing files
 
-doc"""
+"""
     editor()
 
 Determines the editor to use when running functions like `edit`. Returns an Array compatible
@@ -12,44 +12,55 @@ EDITOR as an environmental variable.
 function editor()
     if OS_NAME == :Windows || OS_NAME == :Darwin
         default_editor = "open"
-    elseif isreadable("/etc/alternatives/editor")
+    elseif isfile("/etc/alternatives/editor")
         default_editor = "/etc/alternatives/editor"
     else
         default_editor = "emacs"
     end
     # Note: the editor path can include spaces (if escaped) and flags.
-    command = shell_split(get(ENV,"JULIA_EDITOR", get(ENV,"VISUAL", get(ENV,"EDITOR", default_editor))))
-    isempty(command) && error("editor is empty")
-    return command
+    args = shell_split(get(ENV,"JULIA_EDITOR", get(ENV,"VISUAL", get(ENV,"EDITOR", default_editor))))
+    isempty(args) && error("editor is empty")
+    return args
 end
 
-function edit(file::AbstractString, line::Integer)
+function edit(path::AbstractString, line::Integer=0)
     command = editor()
     name = basename(first(command))
-    issrc = length(file)>2 && file[end-2:end] == ".jl"
+    issrc = length(path)>2 && path[end-2:end] == ".jl"
     if issrc
-        f = find_source_file(file)
-        f !== nothing && (file = f)
+        f = find_source_file(path)
+        f !== nothing && (path = f)
     end
-    const no_line_msg = "Unknown editor: no line number information passed.\nThe method is defined at line $line."
+    background = true
+    line_unsupported = false
     if startswith(name, "emacs") || name == "gedit"
-        spawn(pipeline(`$command +$line $file`, stderr=STDERR))
-    elseif name == "vi" || name == "vim" || name == "nvim" || name == "mvim" || name == "nano"
-        run(`$command +$line $file`)
+        cmd = line != 0 ? `$command +$line $path` : `$command $path`
+    elseif startswith(name, "vim.") || name == "vi" || name == "vim" || name == "nvim" || name == "mvim" || name == "nano"
+        cmd = line != 0 ? `$command +$line $path` : `$command $path`
+        background = false
     elseif name == "textmate" || name == "mate" || name == "kate"
-        spawn(pipeline(`$command $file -l $line`, stderr=STDERR))
+        cmd = line != 0 ? `$command $path -l $line` : `$command $path`
     elseif startswith(name, "subl") || name == "atom"
-        spawn(pipeline(`$command $file:$line`, stderr=STDERR))
+        cmd = line != 0 ? `$command $path:$line` : `$command $path`
     elseif OS_NAME == :Windows && (name == "start" || name == "open")
-        spawn(pipeline(`cmd /c start /b $file`, stderr=STDERR))
-        println(no_line_msg)
+        cmd = `cmd /c start /b $path`
+        line_unsupported = true
     elseif OS_NAME == :Darwin && (name == "start" || name == "open")
-        spawn(pipeline(`open -t $file`, stderr=STDERR))
-        println(no_line_msg)
+        cmd = `open -t $path`
+        line_unsupported = true
     else
-        run(`$command $file`)
-        println(no_line_msg)
+        cmd = `$command $path`
+        background = false
+        line_unsupported = true
     end
+
+    if background
+        spawn(pipeline(cmd, stderr=STDERR))
+    else
+        run(cmd)
+    end
+    line != 0 && line_unsupported && println("Unknown editor: no line number information passed.\nThe method is defined at line $line.")
+
     nothing
 end
 
@@ -58,7 +69,6 @@ function edit(m::Method)
     edit(string(file), line)
 end
 
-edit(file::AbstractString) = edit(file, 1)
 edit(f)          = edit(functionloc(f)...)
 edit(f, t::ANY)  = edit(functionloc(f,t)...)
 edit(file, line::Integer) = error("could not find source file for function")
@@ -83,7 +93,7 @@ less(file, line::Integer) = error("could not find source file for function")
             print(io, x)
         end
     end
-    clipboard() = readall(`pbpaste`)
+    clipboard() = readstring(`pbpaste`)
 end
 
 @linux_only begin
@@ -99,7 +109,7 @@ end
     function clipboard(x)
         c = clipboardcmd()
         cmd = c == :xsel  ? `xsel --nodetach --input --clipboard` :
-              c == :xclip ? `xclip -quiet -in -selection clipboard` :
+              c == :xclip ? `xclip -silent -in -selection clipboard` :
             error("unexpected clipboard command: $c")
         open(pipeline(cmd, stderr=STDERR), "w") do io
             print(io, x)
@@ -110,7 +120,7 @@ end
         cmd = c == :xsel  ? `xsel --nodetach --output --clipboard` :
               c == :xclip ? `xclip -quiet -out -selection clipboard` :
             error("unexpected clipboard command: $c")
-        readall(pipeline(cmd, stderr=STDERR))
+        readstring(pipeline(cmd, stderr=STDERR))
     end
 end
 
@@ -121,13 +131,13 @@ end
         end
         systemerror(:OpenClipboard, 0==ccall((:OpenClipboard, "user32"), stdcall, Cint, (Ptr{Void},), C_NULL))
         systemerror(:EmptyClipboard, 0==ccall((:EmptyClipboard, "user32"), stdcall, Cint, ()))
-        x_u16 = utf16(x)
+        x_u16 = cwstring(x)
         # copy data to locked, allocated space
-        p = ccall((:GlobalAlloc, "kernel32"), stdcall, Ptr{UInt16}, (UInt16, Int32), 2, sizeof(x_u16)+2)
+        p = ccall((:GlobalAlloc, "kernel32"), stdcall, Ptr{UInt16}, (UInt16, Int32), 2, sizeof(x_u16))
         systemerror(:GlobalAlloc, p==C_NULL)
         plock = ccall((:GlobalLock, "kernel32"), stdcall, Ptr{UInt16}, (Ptr{UInt16},), p)
         systemerror(:GlobalLock, plock==C_NULL)
-        ccall(:memcpy, Ptr{UInt16}, (Ptr{UInt16},Ptr{UInt16},Int), plock, x_u16, sizeof(x_u16)+2)
+        ccall(:memcpy, Ptr{UInt16}, (Ptr{UInt16},Ptr{UInt16},Int), plock, x_u16, sizeof(x_u16))
         systemerror(:GlobalUnlock, 0==ccall((:GlobalUnlock, "kernel32"), stdcall, Cint, (Ptr{Void},), plock))
         pdata = ccall((:SetClipboardData, "user32"), stdcall, Ptr{UInt16}, (UInt32, Ptr{UInt16}), 13, p)
         systemerror(:SetClipboardData, pdata!=p)
@@ -142,7 +152,11 @@ end
         systemerror(:CloseClipboard, 0==ccall((:CloseClipboard, "user32"), stdcall, Cint, ()))
         plock = ccall((:GlobalLock, "kernel32"), stdcall, Ptr{UInt16}, (Ptr{UInt16},), pdata)
         systemerror(:GlobalLock, plock==C_NULL)
-        s = utf8(utf16(plock))
+        # find NUL terminator (0x0000 16-bit code unit)
+        len = 0
+        while unsafe_load(plock, len+1) != 0; len += 1; end
+        # get Vector{UInt16}, transcode data to UTF-8, make a ByteString of it
+        s = bytestring(utf16to8(pointer_to_array(plock, len)))
         systemerror(:GlobalUnlock, 0==ccall((:GlobalUnlock, "kernel32"), stdcall, Cint, (Ptr{UInt16},), plock))
         return s
     end
@@ -171,11 +185,11 @@ function versioninfo(io::IO=STDOUT, verbose::Bool=false)
     if verbose
         lsb = ""
         @linux_only try lsb = readchomp(pipeline(`lsb_release -ds`, stderr=DevNull)) end
-        @windows_only try lsb = strip(readall(`$(ENV["COMSPEC"]) /c ver`)) end
+        @windows_only try lsb = strip(readstring(`$(ENV["COMSPEC"]) /c ver`)) end
         if lsb != ""
             println(io,     "           ", lsb)
         end
-        println(io,         "  uname: ",readchomp(`uname -mprsv`))
+        @unix_only println(io,         "  uname: ",readchomp(`uname -mprsv`))
         println(io,         "Memory: $(Sys.total_memory()/2^30) GB ($(Sys.free_memory()/2^20) MB free)")
         try println(io,     "Uptime: $(Sys.uptime()) sec") end
         print(io,           "Load Avg: ")
@@ -192,7 +206,7 @@ function versioninfo(io::IO=STDOUT, verbose::Bool=false)
     end
     println(io,             "  LAPACK: ",liblapack_name)
     println(io,             "  LIBM: ",libm_name)
-    println(io,             "  LLVM: libLLVM-",libllvm_version)
+    println(io,             "  LLVM: libLLVM-",libllvm_version," (", Sys.JIT, ", ", Sys.cpu_name, ")")
     if verbose
         println(io,         "Environment:")
         for (k,v) in ENV
@@ -210,23 +224,21 @@ versioninfo(verbose::Bool) = versioninfo(STDOUT,verbose)
 # displaying type-ambiguity warnings
 
 function code_warntype(io::IO, f, t::ANY)
-    task_local_storage(:TYPEEMPHASIZE, true)
-    try
-        ct = code_typed(f, t)
-        for ast in ct
-            println(io, "Variables:")
-            vars = ast.args[2][1]
-            for v in vars
-                print(io, "  ", v[1])
-                show_expr_type(io, v[2])
-                print(io, '\n')
+    emph_io = IOContext(io, :TYPEEMPHASIZE => true)
+    for li in code_typed(f, t)
+        println(emph_io, "Variables:")
+        for i = 1:length(li.slotnames)
+            print(emph_io, "  ", li.slotnames[i])
+            if isa(li.slottypes,Array)
+                show_expr_type(emph_io, li.slottypes[i], true)
             end
-            print(io, "\nBody:\n  ")
-            show_unquoted(io, ast.args[3], 2)
-            print(io, '\n')
+            print(emph_io, '\n')
         end
-    finally
-        task_local_storage(:TYPEEMPHASIZE, false)
+        print(emph_io, "\nBody:\n  ")
+        body = Expr(:body); body.args = uncompressed_ast(li)
+        body.typ = li.rettype
+        show_unquoted(emph_io, body, 2)
+        print(emph_io, '\n')
     end
     nothing
 end
@@ -244,16 +256,20 @@ function gen_call_with_extracted_types(fcn, ex0)
                     Expr(:call, typesof, map(esc, args[2:end])...))
     end
     exret = Expr(:none)
+    is_macro = false
     ex = expand(ex0)
-    if !isa(ex, Expr)
+    if isa(ex0, Expr) && ex0.head == :macrocall # Make @edit @time 1+2 edit the macro
+        is_macro = true
+        exret = Expr(:call, fcn,  esc(ex0.args[1]), typesof(ex0.args[2:end]...))
+    elseif !isa(ex, Expr)
         exret = Expr(:call, :error, "expression is not a function call or symbol")
     elseif ex.head == :call
         if any(e->(isa(e, Expr) && e.head==:(...)), ex0.args) &&
             isa(ex.args[1], TopNode) && ex.args[1].name == :_apply
             # check for splatting
-            exret = Expr(:call, ex.args[1], ex.args[2], fcn,
-                        Expr(:tuple, esc(ex.args[3]),
-                            Expr(:call, typesof, map(esc, ex.args[4:end])...)))
+            exret = Expr(:call, ex.args[1], fcn,
+                        Expr(:tuple, esc(ex.args[2]),
+                            Expr(:call, typesof, map(esc, ex.args[3:end])...)))
         else
             exret = Expr(:call, fcn, esc(ex.args[1]),
                          Expr(:call, typesof, map(esc, ex.args[2:end])...))
@@ -268,7 +284,7 @@ function gen_call_with_extracted_types(fcn, ex0)
             end
         end
     end
-    if ex.head == :thunk || exret.head == :none
+    if (!is_macro && ex.head == :thunk) || exret.head == :none
         exret = Expr(:call, :error, "expression is not a function call, "
                                   * "or is too complex for @$fcn to analyze; "
                                   * "break it down to simpler parts if possible")
@@ -276,7 +292,7 @@ function gen_call_with_extracted_types(fcn, ex0)
     exret
 end
 
-for fname in [:which, :less, :edit, :code_typed, :code_warntype,
+for fname in [:which, :less, :edit, :functionloc, :code_typed, :code_warntype,
               :code_lowered, :code_llvm, :code_llvm_raw, :code_native]
     @eval begin
         macro ($fname)(ex0)
@@ -285,19 +301,92 @@ for fname in [:which, :less, :edit, :code_typed, :code_warntype,
     end
 end
 
-# `methodswith` -- shows a list of methods using the type given
+"""
+    @which
+
+Applied to a function or macro call, it evaluates the arguments to the specified call, and
+returns the `Method` object for the method that would be called for those arguments. Applied
+to a variable, it returns the module in which the variable was bound. It calls out to the
+`which` function.
+"""
+:@which
+
+"""
+    @less
+
+Evaluates the arguments to the function or macro call, determines their types, and calls the `less`
+function on the resulting expression.
+"""
+:@less
+
+"""
+    @edit
+
+Evaluates the arguments to the function or macro call, determines their types, and calls the `edit`
+function on the resulting expression.
+"""
+:@edit
+
+"""
+    @functionloc
+
+Applied to a function or macro call, it evaluates the arguments to the specified call, and
+returns a tuple `(filename,line)` giving the location for the method that would be called for those arguments.
+It calls out to the `functionloc` function.
+"""
+:@functionloc
+
+"""
+    @code_typed
+
+Evaluates the arguments to the function or macro call, determines their types, and calls
+[`code_typed`](:func:`code_typed`) on the resulting expression.
+"""
+:@code_typed
+
+"""
+    @code_warntype
+
+Evaluates the arguments to the function or macro call, determines their types, and calls
+[`code_warntype`](:func:`code_warntype`) on the resulting expression.
+"""
+:@code_warntype
+
+"""
+    @code_lowered
+
+Evaluates the arguments to the function or macro call, determines their types, and calls
+[`code_lowered`](:func:`code_lowered`) on the resulting expression.
+"""
+:@code_lowered
+
+"""
+    @code_llvm
+
+Evaluates the arguments to the function or macro call, determines their types, and calls
+[`code_llvm`](:func:`code_llvm`) on the resulting expression.
+"""
+:@code_llvm
+
+"""
+    @code_native
+
+Evaluates the arguments to the function or macro call, determines their types, and calls
+[`code_native`](:func:`code_native`) on the resulting expression.
+"""
+:@code_native
 
 function type_close_enough(x::ANY, t::ANY)
     x == t && return true
     return (isa(x,DataType) && isa(t,DataType) && x.name === t.name &&
-            !isleaftype(t) && x <: t)
+            !isleaftype(t) && x <: t) ||
+           (isa(x,Union) && isa(t,DataType) && any(u -> is(u,t), x.types))
 end
 
+# `methodswith` -- shows a list of methods using the type given
 function methodswith(t::Type, f::Function, showparents::Bool=false, meths = Method[])
-    if !isa(f.env, MethodTable)
-        return meths
-    end
-    d = f.env.defs
+    mt = typeof(f).name.mt
+    d = mt.defs
     while d !== nothing
         if any(x -> (type_close_enough(x, t) ||
                      (showparents ? (t <: x && (!isa(x,TypeVar) || x.ub != Any)) :
@@ -409,14 +498,14 @@ function runtests(tests = ["all"], numcores = ceil(Int,CPU_CORES/2))
         buf = PipeBuffer()
         versioninfo(buf)
         error("A test has failed. Please submit a bug report (https://github.com/JuliaLang/julia/issues)\n" *
-              "including error messages above and the output of versioninfo():\n$(readall(buf))")
+              "including error messages above and the output of versioninfo():\n$(readstring(buf))")
     end
 end
 
 # testing
 
 
-doc"""
+"""
     whos([io,] [Module,] [pattern::Regex])
 
 Print information about exported global variables in a module, optionally restricted to those matching `pattern`.
@@ -424,7 +513,7 @@ Print information about exported global variables in a module, optionally restri
 The memory consumption estimate is an approximate lower bound on the size of the internal structure of the object.
 """
 function whos(io::IO=STDOUT, m::Module=current_module(), pattern::Regex=r"")
-    maxline = tty_size()[2]
+    maxline = displaysize(io)[2]
     line = zeros(UInt8, maxline)
     head = PipeBuffer(maxline + 1)
     for v in sort!(names(m))
@@ -440,8 +529,6 @@ function whos(io::IO=STDOUT, m::Module=current_module(), pattern::Regex=r"")
                     @printf(head, "%6d KB     ", bytes ÷ (1024))
                 end
                 print(head, summary(value))
-                print(head, " : ")
-                show(head, value)
             catch e
                 print(head, "#=ERROR: unable to show value=#")
             end
@@ -490,7 +577,11 @@ function summarysize(obj::DataType, seen, excl)
     return size
 end
 
-summarysize(obj::TypeName, seen, excl) = Core.sizeof(obj)
+function summarysize(obj::TypeName, seen, excl)
+    key = pointer_from_objref(obj)
+    haskey(seen, key) ? (return 0) : (seen[key] = true)
+    return Core.sizeof(obj) + (isdefined(obj,:mt) ? summarysize(obj.mt, seen, excl) : 0)
+end
 
 summarysize(obj::ANY, seen, excl) = _summarysize(obj, seen, excl)
 # define the general case separately to make sure it is not specialized for every type
@@ -550,6 +641,14 @@ function summarysize(obj::Module, seen, excl)
             value = getfield(obj, binding)
             if !isa(value, Module) || module_parent(value) === obj
                 size += summarysize(value, seen, excl)::Int
+                vt = isa(value,DataType) ? value : typeof(value)
+                if vt.name.module === obj
+                    if vt !== value
+                        size += summarysize(vt, seen, excl)::Int
+                    end
+                    # charge a TypeName to its module
+                    size += summarysize(vt.name, seen, excl)::Int
+                end
             end
         end
     end
@@ -589,7 +688,9 @@ function summarysize(m::Method, seen, excl)
     while true
         haskey(seen, m) ? (return size) : (seen[m] = true)
         size += Core.sizeof(m)
-        size += summarysize(m.func, seen, excl)::Int
+        if isdefined(m, :func)
+            size += summarysize(m.func, seen, excl)::Int
+        end
         size += summarysize(m.sig, seen, excl)::Int
         size += summarysize(m.tvars, seen, excl)::Int
         size += summarysize(m.invokes, seen, excl)::Int

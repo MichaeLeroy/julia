@@ -34,7 +34,7 @@ function cleanup(r::GitRepo)
     end
 end
 
-function init(path::AbstractString, bare::Cuint = Cuint(0))
+function init(path::AbstractString, bare::Bool=false)
     repo_ptr_ptr = Ref{Ptr{Void}}(C_NULL)
     @check ccall((:git_repository_init, :libgit2), Cint,
                 (Ptr{Ptr{Void}}, Cstring, Cuint), repo_ptr_ptr, path, bare)
@@ -183,7 +183,7 @@ function reset!(repo::GitRepo, obj::GitObject, mode::Cint;
 end
 
 function clone(repo_url::AbstractString, repo_path::AbstractString,
-               clone_opts::CloneOptions = CloneOptions())
+               clone_opts::CloneOptions)
     clone_opts_ref = Ref(clone_opts)
     repo_ptr_ptr = Ref{Ptr{Void}}(C_NULL)
     @check ccall((:git_clone, :libgit2), Cint,

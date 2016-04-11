@@ -1,5 +1,21 @@
 # This file is a part of Julia. License is MIT: http://julialang.org/license
 
+export
+    abspath,
+    basename,
+    dirname,
+    expanduser,
+    homedir,
+    isabspath,
+    isdirpath,
+    joinpath,
+    normpath,
+    realpath,
+    relpath,
+    splitdir,
+    splitdrive,
+    splitext
+
 @unix_only begin
     const path_separator    = "/"
     const path_separator_re = r"/+"
@@ -51,7 +67,7 @@ end
 function pathsep(paths::AbstractString...)
     for path in paths
         m = match(path_separator_re, path)
-        m !== nothing && return m.match[1]
+        m !== nothing && return m.match[1:1]
     end
     return path_separator
 end
@@ -108,37 +124,31 @@ normpath(a::AbstractString, b::AbstractString...) = normpath(joinpath(a,b...))
 abspath(a::AbstractString) = normpath(isabspath(a) ? a : joinpath(pwd(),a))
 abspath(a::AbstractString, b::AbstractString...) = abspath(joinpath(a,b...))
 
-@windows_only realpath(path::AbstractString) = realpath(utf16(path))
-@windows_only function realpath(path::UTF16String)
-    p = UInt32((sizeof(path)>>2) + 1)
+@windows_only function realpath(path::AbstractString)
+    path = cwstring(path)
+    buf = zeros(UInt16, length(path))
     while true
-        buflength = p
-        buf = zeros(UInt16,buflength)
-        p = ccall((:GetFullPathNameW, "Kernel32"), stdcall,
-            UInt32, (Cwstring, UInt32, Ptr{UInt16}, Ptr{Void}),
-            path, buflength, buf, C_NULL)
-        systemerror(:realpath, p == 0)
-        if (p < buflength)
-            resize!(buf, p+1)
-            return utf8(UTF16String(buf))
-        end
+        n = ccall((:GetFullPathNameW, "kernel32"), stdcall,
+            UInt32, (Ptr{UInt16}, UInt32, Ptr{UInt16}, Ptr{Void}),
+            path, length(buf), buf, C_NULL)
+        systemerror(:realpath, n == 0)
+        x = n < length(buf) # is the buffer big enough?
+        resize!(buf, n) # shrink if x, grow if !x
+        x && return UTF8String(utf16to8(buf))
     end
 end
 
-@windows_only longpath(path::AbstractString) = longpath(utf16(path))
-@windows_only function longpath(path::UTF16String)
-    buf = Array(UInt16, length(path.data))
+@windows_only function longpath(path::AbstractString)
+    path = cwstring(path)
+    buf = zeros(UInt16, length(path))
     while true
-        p = ccall((:GetLongPathNameW, "Kernel32"), stdcall, UInt32,
-            (Cwstring, Ptr{UInt16}, UInt32),
+        n = ccall((:GetLongPathNameW, "kernel32"), stdcall,
+            UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32),
             path, buf, length(buf))
-        systemerror(:longpath, p == 0)
-        # Buffer wasn't big enough, in which case `p` is the necessary buffer size
-        if (p > length(buf))
-            resize!(buf, p)
-            continue
-        end
-        return utf8(UTF16String(buf))
+        systemerror(:longpath, n == 0)
+        x = n < length(buf) # is the buffer big enough?
+        resize!(buf, n) # shrink if x, grow if !x
+        x && return UTF8String(utf16to8(buf))
     end
 end
 

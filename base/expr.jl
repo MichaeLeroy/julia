@@ -6,18 +6,18 @@ symbol(s::Symbol) = s
 symbol(s::ASCIIString) = symbol(s.data)
 symbol(s::UTF8String) = symbol(s.data)
 symbol(a::Array{UInt8,1}) =
-    ccall(:jl_symbol_n, Any, (Ptr{UInt8}, Int32), a, length(a))::Symbol
+    ccall(:jl_symbol_n, Ref{Symbol}, (Ptr{UInt8}, Int32), a, length(a))
 symbol(x...) = symbol(string(x...))
 
-gensym() = ccall(:jl_gensym, Any, ())::Symbol
+gensym() = ccall(:jl_gensym, Ref{Symbol}, ())
 
 gensym(s::ASCIIString) = gensym(s.data)
 gensym(s::UTF8String) = gensym(s.data)
 gensym(a::Array{UInt8,1}) =
-    ccall(:jl_tagged_gensym, Any, (Ptr{UInt8}, Int32), a, length(a))::Symbol
+    ccall(:jl_tagged_gensym, Ref{Symbol}, (Ptr{UInt8}, Int32), a, length(a))
 gensym(ss::Union{ASCIIString, UTF8String}...) = map(gensym, ss)
 gensym(s::Symbol) =
-    ccall(:jl_tagged_gensym, Any, (Ptr{UInt8}, Int32), s, ccall(:strlen, Csize_t, (Ptr{UInt8},), s))::Symbol
+    ccall(:jl_tagged_gensym, Ref{Symbol}, (Ptr{UInt8}, Int32), s, ccall(:strlen, Csize_t, (Ptr{UInt8},), s))
 
 macro gensym(names...)
     blk = Expr(:block)
@@ -35,30 +35,19 @@ copy(e::Expr) = (n = Expr(e.head);
                  n.args = astcopy(e.args);
                  n.typ = e.typ;
                  n)
-copy(s::SymbolNode) = SymbolNode(s.name, s.typ)
+copy(s::Slot) = Slot(s.id, s.typ)
 
 # copy parts of an AST that the compiler mutates
-astcopy(x::Union{SymbolNode,Expr}) = copy(x)
+astcopy(x::Union{Slot,Expr}) = copy(x)
 astcopy(x::Array{Any,1}) = Any[astcopy(a) for a in x]
 astcopy(x) = x
 
 ==(x::Expr, y::Expr) = x.head === y.head && x.args == y.args
 ==(x::QuoteNode, y::QuoteNode) = x.value == y.value
+==(x::Slot, y::Slot) = x.id === y.id && x.typ === y.typ
 
-function show(io::IO, tv::TypeVar)
-    if !is(tv.lb, Bottom)
-        show(io, tv.lb)
-        print(io, "<:")
-    end
-    write(io, tv.name)
-    if !is(tv.ub, Any)
-        print(io, "<:")
-        show(io, tv.ub)
-    end
-end
-
-expand(x) = ccall(:jl_expand, Any, (Any,), x)
-macroexpand(x) = ccall(:jl_macroexpand, Any, (Any,), x)
+expand(x::ANY) = ccall(:jl_expand, Any, (Any,), x)
+macroexpand(x::ANY) = ccall(:jl_macroexpand, Any, (Any,), x)
 
 ## misc syntax ##
 
@@ -76,6 +65,21 @@ end
 
 macro pure(ex)
     esc(isa(ex, Expr) ? pushmeta!(ex, :pure) : ex)
+end
+
+"""
+    @propagate_inbounds(ex)
+
+Tells the compiler to inline a function while retaining the caller's inbounds context.
+"""
+macro propagate_inbounds(ex)
+    if isa(ex, Expr)
+        pushmeta!(ex, :inline)
+        pushmeta!(ex, :propagate_inbounds)
+        esc(ex)
+    else
+        esc(ex)
+    end
 end
 
 ## some macro utilities ##
@@ -108,7 +112,7 @@ function localize_vars(expr, esca)
     if esca
         v = map(esc,v)
     end
-    Expr(:localize, :(()->($expr)), v...)
+    Expr(:localize, expr, v...)
 end
 
 function pushmeta!(ex::Expr, sym::Symbol, args::Any...)
@@ -129,7 +133,7 @@ end
 
 function popmeta!(body::Expr, sym::Symbol)
     body.head == :block || return false, []
-    found, metaex = findmeta_block(body)
+    found, metaex = findmeta_block(body.args)
     if !found
         return false, []
     end
@@ -147,23 +151,29 @@ function popmeta!(body::Expr, sym::Symbol)
     false, []
 end
 popmeta!(arg, sym) = (false, [])
+function popmeta!(body::Array{Any,1}, sym::Symbol)
+    ex = Expr(:block); ex.args = body
+    popmeta!(ex, sym)
+end
 
 function findmeta(ex::Expr)
     if ex.head == :function || (ex.head == :(=) && typeof(ex.args[1]) == Expr && ex.args[1].head == :call)
         body::Expr = ex.args[2]
         body.head == :block || error(body, " is not a block expression")
-        return findmeta_block(ex)
+        return findmeta_block(ex.args)
     end
     error(ex, " is not a function expression")
 end
 
-function findmeta_block(ex::Expr)
-    for a in ex.args
+findmeta(ex::Array{Any,1}) = findmeta_block(ex)
+
+function findmeta_block(exargs)
+    for a in exargs
         if isa(a, Expr)
             if (a::Expr).head == :meta
                 return true, a::Expr
             elseif (a::Expr).head == :block
-                found, exb = findmeta_block(a)
+                found, exb = findmeta_block(a.args)
                 if found
                     return found, exb
                 end
@@ -171,4 +181,13 @@ function findmeta_block(ex::Expr)
         end
     end
     return false, Expr(:block)
+end
+
+remove_linenums!(ex) = ex
+function remove_linenums!(ex::Expr)
+    filter!(x->!((isa(x,Expr) && is(x.head,:line)) || isa(x,LineNumberNode)), ex.args)
+    for subex in ex.args
+        remove_linenums!(subex)
+    end
+    ex
 end

@@ -68,3 +68,102 @@ end
     """%3 = add i32 %1, %0
        ret i32 %3""", Int32, Tuple{Int32, Int32},
         Int32(1), Int32(2))) == 3
+
+# Test whether declarations work properly
+function undeclared_ceil(x::Float64)
+    llvmcall("""%2 = call double @llvm.ceil.f64(double %0)
+        ret double %2""", Float64, Tuple{Float64}, x)
+end
+@test_throws ErrorException undeclared_ceil(4.2)
+@test_throws ErrorException undeclared_ceil(4.2)
+
+function declared_floor(x::Float64)
+    llvmcall(
+        ("""declare double @llvm.floor.f64(double)""",
+         """%2 = call double @llvm.floor.f64(double %0)
+            ret double %2"""),
+    Float64, Tuple{Float64}, x)
+end
+@test_approx_eq declared_floor(4.2) 4.
+
+function doubly_declared_floor(x::Float64)
+    llvmcall(
+        ("""declare double @llvm.floor.f64(double)""",
+         """%2 = call double @llvm.floor.f64(double %0)
+            ret double %2"""),
+    Float64, Tuple{Float64}, x+1)-1
+end
+@test_approx_eq doubly_declared_floor(4.2) 4.
+
+function doubly_declared2_trunc(x::Float64)
+    a = llvmcall(
+        ("""declare double @llvm.trunc.f64(double)""",
+         """%2 = call double @llvm.trunc.f64(double %0)
+            ret double %2"""),
+    Float64, Tuple{Float64}, x)
+    b = llvmcall(
+        ("""declare double @llvm.trunc.f64(double)""",
+         """%2 = call double @llvm.trunc.f64(double %0)
+            ret double %2"""),
+    Float64, Tuple{Float64}, x+1)-1
+    a + b
+end
+@test_approx_eq doubly_declared2_trunc(4.2) 8.
+
+# Test for single line
+function declared_ceil(x::Float64)
+    llvmcall(
+        ("declare double @llvm.ceil.f64(double)",
+         """%2 = call double @llvm.ceil.f64(double %0)
+            ret double %2"""),
+    Float64, Tuple{Float64}, x)
+end
+@test_approx_eq declared_ceil(4.2) 5.0
+
+# Test for multiple lines
+function ceilfloor(x::Float64)
+    llvmcall(
+        ("""declare double @llvm.ceil.f64(double)
+            declare double @llvm.floor.f64(double)""",
+         """%2 = call double @llvm.ceil.f64(double %0)
+            %3 = call double @llvm.floor.f64(double %2)
+            ret double %3"""),
+    Float64, Tuple{Float64}, x)
+end
+@test_approx_eq ceilfloor(7.4) 8.0
+
+# Test for proper declaration extraction
+function confuse_declname_parsing()
+    llvmcall(
+        ("""declare i64 addrspace(0)* @foobar()""",
+         """ret void"""),
+    Void, Tuple{})
+end
+confuse_declname_parsing()
+
+
+module ObjLoadTest
+    using Base.Test
+    using Base.llvmcall
+    here = dirname(@__FILE__)
+    didcall = false
+    function callback()
+        global didcall
+        didcall = true
+        nothing
+    end
+    Base.ccallable(callback,Void,Tuple{},:jl_the_callback)
+    Base.ccallable(callback,Void,Tuple{},:_jl_the_callback)
+    # Make sure everything up until here gets compiled
+    callback(); didcall = false
+    function do_the_call()
+        llvmcall(
+        (""" declare void @jl_the_callback()""",
+        """
+        call void @jl_the_callback()
+        ret void
+        """),Void,Tuple{})
+    end
+    do_the_call()
+    @test didcall
+end

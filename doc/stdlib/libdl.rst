@@ -16,7 +16,7 @@
 
    .. Docstring generated from Julia source
 
-   Similar to :func:`dlopen`, except returns a ``NULL`` pointer instead of raising errors.
+   Similar to :func:`dlopen`\ , except returns a ``NULL`` pointer instead of raising errors.
 
 .. data:: RTLD_DEEPBIND
 
@@ -60,7 +60,7 @@
 
    .. Docstring generated from Julia source
 
-   Look up a symbol from a shared library handle, silently return NULL pointer on lookup failure.
+   Look up a symbol from a shared library handle, silently return ``NULL`` pointer on lookup failure.
 
 .. function:: dlclose(handle)
 

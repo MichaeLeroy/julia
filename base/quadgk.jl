@@ -79,7 +79,7 @@ function evalrule(f, a,b, x,w,gw, nrm)
     return Segment(a, b, Ik, E)
 end
 
-rulekey(::Type{BigFloat}, n) = (BigFloat, get_bigfloat_precision(), n)
+rulekey(::Type{BigFloat}, n) = (BigFloat, precision(BigFloat), n)
 rulekey(T,n) = (T,n)
 
 # Internal routine: integrate f over the union of the open intervals
@@ -169,10 +169,10 @@ end
 # all the integration-segment endpoints
 function quadgk(f, a, b, c...; kws...)
     T = promote_type(typeof(float(a)), typeof(b))
-    for i in 1:length(c)
-        T = promote_type(T, typeof(c[i]))
+    for x in c
+        T = promote_type(T, typeof(x))
     end
-    cT = T[ c[i] for i in 1:length(c) ]
+    cT = map(T, c)
     quadgk(f, convert(T, a), convert(T, b), cT...; kws...)
 end
 

@@ -1,6 +1,6 @@
 # This file is a part of Julia. License is MIT: http://julialang.org/license
 
-type Set{T}
+type Set{T} <: AbstractSet{T}
     dict::Dict{T,Void}
 
     Set() = new(Dict{T,Void}())
@@ -11,6 +11,7 @@ Set(itr) = Set{eltype(itr)}(itr)
 
 eltype{T}(::Type{Set{T}}) = T
 similar{T}(s::Set{T}) = Set{T}()
+similar(s::Set, T::Type) = Set{T}()
 
 function show(io::IO, s::Set)
     print(io,"Set")
@@ -103,6 +104,12 @@ const ⊆ = issubset
 ⊊(l::Set, r::Set) = <(l, r)
 ⊈(l::Set, r::Set) = !⊆(l, r)
 
+"""
+    unique(itr)
+
+Returns an array containing one value from `itr` for each unique value,
+as determined by `isequal`.
+"""
 function unique(C)
     out = Vector{eltype(C)}()
     seen = Set{eltype(C)}()
@@ -115,10 +122,11 @@ function unique(C)
     out
 end
 
-doc"""
+"""
     unique(f, itr)
 
-Returns an array containing one value from `itr` for each unique value produced by `f` applied to elements of `itr`.
+Returns an array containing one value from `itr` for each unique value produced by `f`
+applied to elements of `itr`.
 """
 function unique(f::Callable, C)
     out = Vector{eltype(C)}()
@@ -153,7 +161,7 @@ end
 
 const hashs_seed = UInt === UInt64 ? 0x852ada37cfe8e0ce : 0xcfe8e0ce
 function hash(s::Set, h::UInt)
-    h += hashs_seed
+    h = hash(hashs_seed, h)
     for x in s
         h $= hash(x)
     end
